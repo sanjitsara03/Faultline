@@ -1,0 +1,14 @@
+faultline:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('PGHOST') }}"
+      port: "{{ env_var('PGPORT') | as_number }}"
+      user: "{{ env_var('PGUSER') }}"
+      password: "{{ env_var('PGPASSWORD') }}"
+      dbname: "{{ env_var('PGDATABASE') }}"
+      schema: analytics
+      # defaults to require; run_dbt.py overrides via PGSSLMODE if DATABASE_URL carries ?sslmode=
+      sslmode: "{{ env_var('PGSSLMODE', 'require') }}"
+      threads: 4

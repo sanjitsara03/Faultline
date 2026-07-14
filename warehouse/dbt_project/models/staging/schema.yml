@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_payments
+    description: "Successful payments only (failed/pending filtered out)."
+    columns:
+      - name: payment_id
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_shipments
+    # Deliberately no unique test on order_id: the 1:1 shipment-per-order join assumption downstream is left untested.
+    columns:
+      - name: shipment_id
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_refunds
+    columns:
+      - name: refund_id
+        tests:
+          - unique
+          - not_null

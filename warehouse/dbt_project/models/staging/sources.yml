@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: raw_customers
+      - name: raw_orders
+      - name: raw_payments
+      - name: raw_shipments
+      - name: raw_refunds

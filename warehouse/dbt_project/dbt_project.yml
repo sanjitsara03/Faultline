@@ -1,0 +1,16 @@
+name: faultline
+version: "1.0.0"
+config-version: 2
+
+profile: faultline
+
+model-paths: ["models"]
+
+models:
+  faultline:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -13,6 +13,7 @@ __pycache__/
 warehouse/dbt_project/target/
 warehouse/dbt_project/dbt_packages/
 warehouse/dbt_project/logs/
+warehouse/dbt_project/.user.yml
 logs/
 
 docs/

@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: mart_revenue_daily
+    description: "Daily order counts and revenue by order date. Grain: date_day."
+
+  - name: mart_customer_health
+    description: "Daily new/active customers and revenue per active customer. Grain: date_day."
+
+  - name: mart_ops_fulfillment
+    description: "Daily shipment volume, delivery time, and late rate by ship date. Grain: date_day."
