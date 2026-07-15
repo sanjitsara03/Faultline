@@ -21,6 +21,9 @@ import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import dbconn  # noqa: E402  (repo-root helper: keepalive/retry Supabase connections)
+
 # ---------------------------------------------------------------------------
 # Fixed clock and window (never datetime.now())
 # ---------------------------------------------------------------------------
@@ -393,7 +396,7 @@ def main():
     orders, payments, shipments, refunds, first_order_at = generate_orders(rng)
     customers = generate_customers(rng, first_order_at)
 
-    conn = psycopg2.connect(url)
+    conn = dbconn.connect(url)
     try:
         load(conn, customers, orders, payments, shipments, refunds)
         print_summary(conn)

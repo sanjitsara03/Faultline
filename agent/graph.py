@@ -37,8 +37,9 @@ class Diagnosis(BaseModel):
     """Structured output — scoring.py compares this against YAML ground truth."""
 
     root_cause_model: str = Field(
-        description="The dbt model (or raw source table) where the defect lives, "
-                    "e.g. 'int_orders_joined' or 'raw_payments'")
+        description="The dbt model (or raw source table) where the defect lives — "
+                    "the exact node name, e.g. a stg_/int_/mart_ model or a raw_ "
+                    "source table")
     mechanism: str = Field(
         description="One paragraph: what is mechanically wrong and how it propagates "
                     "to the alerted metric")
@@ -58,17 +59,27 @@ Method (follow it, do not improvise the order):
 1. Parse the alert: affected mart, metric, direction, onset date.
 2. Call get_dbt_artifacts with artifact='manifest'. Build the upstream lineage
    of the alerted mart from `depends_on`, and READ the raw_code of each model on
-   the path — join shapes and WHERE clauses are where silent faults live.
-3. Walk upstream hop by hop from the mart. At each model, run small diagnostic
-   queries via run_query:
-   - row counts per day around the onset date (compare before vs after)
-   - join-key uniqueness (e.g. one row per order_id?) — fan-out inflates metrics
-   - null rates on measure columns (SUM skips NULLs silently — deflates metrics)
-   - value distributions (avg/max per day) — unit changes inflate by 10-100x
+   the path — a model's SQL states the assumptions (join keys, filters, casts,
+   aggregations) that its input data must satisfy for its output to be correct.
+3. Walk upstream hop by hop from the mart. At each model, RECONCILE its output
+   against its own inputs, comparing before vs after the onset date:
+   - recompute the model's key aggregates directly from its declared inputs and
+     check they still match its output; the hop where they stop reconciling at
+     onset localizes the break.
+   - profile each side of onset: row counts, grain (rows per business key vs the
+     count of distinct keys), null rates on the columns that feed the metric, and
+     the range/distribution of numeric columns. Anything that shifts at onset is
+     a lead.
+   - check whether the model's SQL (from step 2) makes an assumption the shifted
+     data now violates.
 4. A hypothesis is CONFIRMED only when you have query evidence of the defect in
-   the data or model logic, not just a plausible story. Distinguish the model
-   where the defect BECOMES wrong (bad join, missing filter) from the source
-   table carrying bad rows; name the model whose logic lets the fault through.
+   the data or model logic, not just a plausible story. The root cause is the
+   SINGLE model whose own SQL first turns correct inputs into incorrect output —
+   the hop where its output stops reconciling with its inputs. It is NOT an
+   upstream table merely carrying anomalous rows (that data is an input the model
+   mishandles), and it is NOT a downstream model that only aggregates or passes
+   through output that was already wrong when it arrived. Trace to the exact hop
+   where the reconciliation first breaks and name that model.
 5. Stop when confirmed, or when you have exhausted upstream sources.
 
 Constraints: read-only SQL; results cap at 200 rows, so aggregate — never

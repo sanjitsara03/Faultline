@@ -18,6 +18,9 @@ from pathlib import Path
 
 import psycopg2
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import dbconn  # noqa: E402  (repo-root helper: keepalive/retry Supabase connections)
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -146,7 +149,7 @@ def main() -> None:
     if not url:
         sys.exit("DATABASE_URL is not set (expected in .env at repo root)")
 
-    conn = psycopg2.connect(url)
+    conn = dbconn.connect(url)
     try:
         with conn:  # one transaction: the whole mutation lands, or none of it
             with conn.cursor() as cur:
