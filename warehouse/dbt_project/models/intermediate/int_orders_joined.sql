@@ -1,8 +1,3 @@
--- Grain: one row per order (in clean data).
--- Payments and refunds are pre-aggregated to order grain before joining.
--- Shipments are joined raw on order_id: one shipment per order is assumed,
--- so pre-aggregation was skipped. If that assumption breaks, this join fans out.
-
 with orders as (
     select * from {{ ref('stg_orders') }}
 ),

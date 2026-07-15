@@ -15,10 +15,6 @@ from pathlib import Path
 import psycopg2
 import psycopg2.errors
 from dotenv import load_dotenv
-# fastmcp 2.x, not the official SDK's mcp.server.fastmcp: MintMCP's startup
-# probe opens GET /mcp without the strict Accept header the official SDK
-# demands (it 406s), so the probe times out and hosted deploys fail with
-# empty logs. fastmcp 2.x is what MintMCP's own template documents.
 from fastmcp import FastMCP
 from psycopg2 import sql
 
@@ -28,8 +24,7 @@ mcp = FastMCP("faultline")
 
 
 def _database_url() -> str:
-    # On MintMCP the env var is injected into the container; the .env fallback
-    # only fires on the laptop (local dev / test_client.py).
+    # On MintMCP the env var is injected into the container;
     if not os.environ.get("DATABASE_URL"):
         load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     url = os.environ.get("DATABASE_URL")
@@ -39,14 +34,10 @@ def _database_url() -> str:
 
 
 def _connect():
-    # One fresh connection per tool call: boring and stateless, so the server
-    # survives the Supabase pooler's idle timeouts with nothing to reconnect.
+    # One fresh connection per tool call
     conn = psycopg2.connect(_database_url())
     conn.autocommit = True  # each statement gets its own implicit transaction
     with conn.cursor() as cur:
-        # Defense in depth: the MintMCP gateway is the governance layer being
-        # demonstrated, but with a read-only session a bypassed gateway still
-        # can't write. Timeout keeps a runaway agent query from hanging a call.
         cur.execute("SET default_transaction_read_only = on")
         cur.execute("SET statement_timeout = '15s'")
     return conn
@@ -83,7 +74,7 @@ def run_query(sql: str) -> str:
                 result["truncated"] = True
                 result["note"] = (f"Result truncated to first {ROW_CAP} rows. "
                                   "Use aggregation or a tighter LIMIT/WHERE.")
-            return json.dumps(result, default=str)  # default=str: Decimal/date/uuid
+            return json.dumps(result, default=str) 
     except Exception as e:
         return _error(str(e).strip())
     finally:
@@ -91,8 +82,6 @@ def run_query(sql: str) -> str:
 
 
 def _trim_manifest(manifest: dict) -> dict:
-    # Raw manifest is multi-MB; keep only what an investigation needs so the
-    # whole DAG fits in an LLM context.
     nodes = {}
     for node_id, node in manifest.get("nodes", {}).items():
         trimmed = {
@@ -231,13 +220,7 @@ def inspect_schema(table: str) -> str:
 
 
 if __name__ == "__main__":
-    # Two transports: stdio for local dev (test_client.py spawns us as a child
-    # process); streamable HTTP in the MintMCP-hosted container (their platform
-    # probes /mcp on :8000). The Dockerfile sets MCP_TRANSPORT=http.
     if os.environ.get("MCP_TRANSPORT") == "http":
-        # MintMCP's runtime assigns the port via the PORT env var (despite the
-        # docs saying "serve on 8000" — their probe connects to $PORT, verified
-        # in hosted-cli source). 8000 stays the fallback for manual runs.
         port = int(os.environ.get("PORT", "8000"))
         mcp.run(transport="streamable-http", host="0.0.0.0", port=port, path="/mcp")
     else:

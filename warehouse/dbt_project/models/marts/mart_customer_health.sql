@@ -1,5 +1,3 @@
--- Grain: one row per calendar day of ordered_at.
-
 with orders as (
     select * from {{ ref('int_orders_joined') }}
 ),

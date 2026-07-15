@@ -1,5 +1,3 @@
--- Grain: one row per customer.
-
 select
     customer_id,
     sum(coalesce(order_revenue, 0)) as lifetime_revenue,

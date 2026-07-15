@@ -1,8 +1,3 @@
--- Grain: one row per calendar day of ordered_at.
--- Reads from int_orders_joined, not stg_orders + stg_payments directly:
--- if the shipments join upstream ever fans out, the duplicated order rows
--- inflate every figure here. That propagation path is deliberate.
-
 select
     ordered_at::date as date_day,
     count(*) as orders_count,
