@@ -8,14 +8,47 @@ Usage: uv run python warehouse/run_dbt.py <dbt args>, e.g. `... run_dbt.py run`
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import psycopg2
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_DIR = REPO_ROOT / "warehouse" / "dbt_project"
+
+
+def upload_artifacts(database_url: str) -> None:
+    """Upsert target/manifest.json + run_results.json into meta.dbt_artifacts.
+
+    The MCP server runs on MintMCP's cloud and can't see this laptop's
+    filesystem — the database is the only shared state it can read from.
+    """
+    conn = psycopg2.connect(database_url)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("create schema if not exists meta")
+                cur.execute(
+                    "create table if not exists meta.dbt_artifacts ("
+                    " name text primary key,"
+                    " data jsonb not null,"
+                    " generated_at timestamptz not null default now())"
+                )
+                for name in ("manifest", "run_results"):
+                    payload = (PROJECT_DIR / "target" / f"{name}.json").read_text()
+                    cur.execute(
+                        "insert into meta.dbt_artifacts (name, data, generated_at)"
+                        " values (%s, %s::jsonb, now())"
+                        " on conflict (name) do update"
+                        " set data = excluded.data, generated_at = excluded.generated_at",
+                        (name, payload),
+                    )
+    finally:
+        conn.close()
+    print("uploaded manifest + run_results to meta.dbt_artifacts")
 
 
 def main() -> None:
@@ -42,7 +75,14 @@ def main() -> None:
     # match both "--project-dir X" and "--project-dir=X" forms
     if not any(a == "--project-dir" or a.startswith("--project-dir=") for a in args):
         args += ["--project-dir", str(PROJECT_DIR)]
-    os.execvp("dbt", ["dbt", *args])
+    result = subprocess.run(["dbt", *args])
+
+    # Upload lives here, not in inject.py: every dbt invocation refreshes the
+    # cloud-visible artifacts; stale artifacts would poison the agent's map.
+    dbt_command = next((a for a in args if not a.startswith("-")), None)
+    if result.returncode == 0 and dbt_command in ("run", "build", "test"):
+        upload_artifacts(url)
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":

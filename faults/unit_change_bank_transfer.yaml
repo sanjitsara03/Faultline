@@ -1,0 +1,35 @@
+id: unit_change_bank_transfer
+category: unit_change
+description: >
+  On 2026-06-28 the bank_transfer provider starts sending amounts in cents
+  instead of dollars: every bank_transfer payment from onset arrives 100x.
+  stg_payments does no unit normalization and has no sanity bound on amount,
+  so the inflated values flow straight into revenue.
+injection:
+  type: data_mutation
+  target: raw_payments
+  action: multiply_column
+  params:
+    key_column: payment_id
+    column: amount
+    factor: 100
+    fraction: 1.0
+    filter: "payment_method = 'bank_transfer' and paid_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.total_revenue
+  # Measured on the live seed (deterministic): +400% to +900% per post-onset
+  # day. bank_transfer is only ~5-8% of daily revenue (~15-25 payments/day),
+  # so x100 makes it dominate; few large payments -> high day-to-day variance.
+  expected_deviation: "+400-900%"
+  onset: "2026-06-28"
+ground_truth:
+  root_cause_model: stg_payments
+  root_cause_mechanism: >
+    bank_transfer amounts arrive in cents (100x) from the onset date;
+    stg_payments passes amount through with no unit normalization and no
+    sanity bound, so the inflated amounts land unchanged in order_revenue
+    and daily total_revenue.
+  acceptable_fixes:
+    - normalize bank_transfer amounts (divide by 100) in stg_payments from the cutover date
+    - add a sanity bound / accepted-range test on stg_payments.amount to catch unit drift
+difficulty: easy

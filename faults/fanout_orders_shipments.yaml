@@ -1,0 +1,35 @@
+id: fanout_orders_shipments
+category: fan_out_join
+description: >
+  A carrier integration change starts emitting duplicate shipment records:
+  ~30% of shipments shipped on/after 2026-06-28 get a second row with a fresh
+  shipment_id but the same order_id. The shipment_id uniqueness test stays
+  green (order_id uniqueness was never tested), so the orders-shipments join
+  silently fans out and double-counts revenue.
+injection:
+  type: data_mutation
+  target: raw_shipments
+  action: duplicate_rows
+  params:
+    key_column: shipment_id   # copies get fresh ids continuing the S-sequence, so the PK test stays green
+    fraction: 0.3
+    filter: "shipped_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.total_revenue
+  # Measured on the live seed (deterministic): +21-31% on fully affected days
+  # (min +21.7% on 07-01, max +30.7% on 07-02), typically ~+25%. Bleeds into
+  # ordered-days 06-26/06-27 (shipments lag orders by 4-48h) and fades on
+  # 07-10 (tail orders not yet shipped at the snapshot).
+  expected_deviation: "+21-31%"
+  onset: "2026-06-28"
+ground_truth:
+  root_cause_model: int_orders_joined
+  root_cause_mechanism: >
+    Shipments are joined raw on order_id under a one-shipment-per-order
+    assumption; duplicate shipment rows (same order_id, new shipment_id) make
+    the join key non-unique in shipments, so each affected order fans out into
+    two rows and its order_revenue is counted twice in mart_revenue_daily.
+  acceptable_fixes:
+    - dedupe shipments to one row per order_id in stg_shipments
+    - pre-aggregate shipments to order grain before the join in int_orders_joined
+difficulty: medium
