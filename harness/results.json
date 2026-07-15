@@ -1,0 +1,89 @@
+[
+  {
+    "fault": "fanout_orders_shipments",
+    "category": "fan_out_join",
+    "difficulty": "medium",
+    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
+    "expected_root_cause": "int_orders_joined",
+    "n_trials": 2,
+    "n_scored": 2,
+    "root_cause_rate": [
+      2,
+      2
+    ],
+    "mechanism_rate": [
+      2,
+      2
+    ],
+    "fix_rate": [
+      2,
+      2
+    ],
+    "root_cause_answers": {
+      "int_orders_joined": 2
+    },
+    "avg_tool_calls": 16.0,
+    "avg_wall": 70.3,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "int_orders_joined LEFT JOINs stg_shipments directly on order_id without first aggregating shipments to one row per order. When an order has multiple shipments (e.g., split shipments, reships), the order row is duplicated once per shipment. mart_revenue_daily then computes orders_count via count(*) over int_orders_joined, so any order with N shipments is counted N times. Starting 2026-06-27, the share of orders with 2 shipments jumped from ~0.7% to ~29%, producing the +21% alert. The same fan-out also inflates total_revenue and refunds_amount (sums are duplicated per shipment row), but the most visible signal is orders_count.",
+          "evidence": [
+            "mart_revenue_daily.orders_count jumps from ~300/day to ~400-470/day starting 2026-06-27.",
+            "int_orders_joined post-onset (2026-06-27 to 2026-07-05): 5929 rows vs 5164 distinct order_id \u2014 a ~14.8% fan-out.",
+            "Pre-onset (2026-06-13 to 2026-06-26): 3853 shipment rows for 3828 distinct orders; only 25 orders had 2 shipments (~0.7%).",
+            "Post-onset: 3252 shipment rows for 2512 distinct orders; 740 orders now have 2 shipments (~29%).",
+            "Payments and refunds do not fan out (2865 distinct payment orders, 28 refunds), so the overcount is entirely from shipments.",
+            "mart_revenue_daily uses count(*) over int_orders_joined, so each duplicated shipment row inflates orders_count by the number of extra shipments per order."
+          ],
+          "proposed_fix": "In int_orders_joined, aggregate stg_shipments to one row per order_id before joining (e.g., aggregate to one shipment_id, carrier, shipping_cost, shipped_at, delivered_at per order \u2014 typically MIN/MAX of shipped_at with the corresponding carrier/cost, or pick the first shipment). This restores the one-row-per-order grain that mart_revenue_daily's count(*) assumes.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated order counts and revenue due to the one-shipment-per-order assumption.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix aggregates shipments to one row per order_id before the join, aligning with the first acceptable fix."
+        },
+        "tool_calls": 15,
+        "wall_seconds": 69.3,
+        "degraded": false
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "model.faultline.int_orders_joined",
+          "mechanism": "int_orders_joined joins stg_orders LEFT JOIN stg_shipments ON order_id. Starting 2026-06-27, raw_shipments began containing multiple shipment rows per order_id (e.g., split shipments, re-shipments, or a data load bug). The join is one-to-many, so each order is duplicated once per shipment row. mart_revenue_daily then does count(*) over int_orders_joined grouped by ordered_at::date, so orders_count is inflated by the number of extra shipment rows per order. Before 2026-06-27, shipments were 1:1 with orders, so the count was correct.",
+          "evidence": [
+            "mart_revenue_daily.orders_count matches int_orders_joined row count (not distinct orders) starting 2026-06-27.",
+            "Before 2026-06-27, int_orders_joined rows == distinct orders (1:1).",
+            "From 2026-06-27 onward, int_orders_joined rows > distinct orders because raw_shipments now contains multiple shipment rows per order_id (e.g., 2026-06-28: 388 shipment rows vs 297 distinct orders = 91 duplicates; 2026-06-27: 284 rows vs 284 distinct = 0).",
+            "int_orders_joined LEFT JOINs shipments on order_id without deduplication, so each shipment row fans out the order row.",
+            "mart_revenue_daily then counts(*) on the inflated rows, producing the +21% orders_count spike.",
+            "Sample order O028908 appears twice in int_orders_joined with two different shipment_ids (S024843, S027418)."
+          ],
+          "proposed_fix": "In int_orders_joined, aggregate stg_shipments to one row per order_id before joining (e.g., SELECT order_id, MIN(shipment_id) AS shipment_id, MIN(carrier) AS carrier, SUM(shipping_cost) AS shipping_cost, MIN(shipped_at) AS shipped_at, MIN(delivered_at) AS delivered_at FROM stg_shipments GROUP BY order_id), or change the join to use a deduplicated/lateral subquery. This restores 1:1 grain between orders and shipments and makes mart_revenue_daily.orders_count reflect true order counts again.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated revenue counts due to a one-to-many join.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix aggregates shipments to one row per order_id before the join, which aligns with the acceptable fix of pre-aggregating shipments to order grain."
+        },
+        "tool_calls": 17,
+        "wall_seconds": 71.3,
+        "degraded": false
+      }
+    ]
+  }
+]

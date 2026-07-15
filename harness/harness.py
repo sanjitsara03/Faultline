@@ -68,7 +68,49 @@ def _reset_and_inject(fault_id: str) -> None:
     _inject("--fault", fault_id)
 
 
-async def _run_one(spec: dict) -> dict:
+async def _one_trial(spec: dict, alert_text: str) -> dict:
+    """One investigation on an already-injected warehouse. The agent is read-only,
+    so repeated trials on the same injected state don't contaminate each other —
+    that's what lets us amortize one reseed over N trials."""
+    try:
+        result = await graph.investigate(alert_text)
+    except Exception as e:
+        return {"error": f"agent: {e}"}
+    s = scoring.score(result["diagnosis"], spec["ground_truth"])
+    return {
+        "diagnosis": result["diagnosis"],
+        "score": s,
+        "tool_calls": result["tool_calls"],
+        "wall_seconds": result["wall_seconds"],
+        "degraded": result.get("degraded", False),
+    }
+
+
+def _aggregate(spec: dict, alert_text: str, trials: list[dict]) -> dict:
+    from collections import Counter
+    ok = [t for t in trials if "error" not in t]
+    n = len(ok)
+    answers = Counter(t["score"]["root_cause_got"] for t in ok)
+    return {
+        "fault": spec["id"],
+        "category": spec.get("category"),
+        "difficulty": spec.get("difficulty"),
+        "alert": alert_text,
+        "expected_root_cause": ok[0]["score"]["root_cause_expected"] if ok else None,
+        "n_trials": len(trials),
+        "n_scored": n,
+        "root_cause_rate": [sum(t["score"]["root_cause_correct"] for t in ok), n],
+        "mechanism_rate": [sum(t["score"]["mechanism_correct"] for t in ok), n],
+        "fix_rate": [sum(t["score"]["fix_acceptable"] for t in ok), n],
+        "root_cause_answers": dict(answers),  # discloses attribution nondeterminism
+        "avg_tool_calls": round(sum(t["tool_calls"] for t in ok) / n, 1) if n else None,
+        "avg_wall": round(sum(t["wall_seconds"] for t in ok) / n, 1) if n else None,
+        "degraded_count": sum(1 for t in ok if t.get("degraded")),
+        "trials": trials,
+    }
+
+
+async def _run_one(spec: dict, trials: int = 1) -> dict:
     fault_id = spec["id"]
     print(f"  reset + inject {fault_id} ...", flush=True)
     _retry(f"reset+inject {fault_id}", lambda: _reset_and_inject(fault_id))
@@ -78,50 +120,47 @@ async def _run_one(spec: dict) -> dict:
         return {"fault": fault_id, "error": "detector found no anomaly"}
     alert_text = alert.to_text()
     print(f"  alert: {alert_text}", flush=True)
-    print(f"  investigating ...", flush=True)
 
-    try:
-        result = await graph.investigate(alert_text)
-    except Exception as e:
-        return {"fault": fault_id, "alert": alert_text, "error": f"agent: {e}"}
-
-    s = scoring.score(result["diagnosis"], spec["ground_truth"])
-    return {
-        "fault": fault_id,
-        "category": spec.get("category"),
-        "difficulty": spec.get("difficulty"),
-        "alert": alert_text,
-        "diagnosis": result["diagnosis"],
-        "score": s,
-        "tool_calls": result["tool_calls"],
-        "wall_seconds": result["wall_seconds"],
-        "model": result["model"],
-    }
+    results = []
+    for t in range(trials):
+        print(f"  trial {t + 1}/{trials} ...", flush=True)
+        results.append(await _one_trial(spec, alert_text))
+    return _aggregate(spec, alert_text, results)
 
 
 def _print_table(rows: list[dict]) -> None:
-    hdr = f"{'fault':<28}{'diff':<8}{'root_cause':<14}{'mech':<6}{'fix':<6}{'calls':<7}{'wall':<7}"
+    hdr = (f"{'fault':<28}{'diff':<8}{'root_cause':<11}{'mech':<9}{'fix':<9}"
+           f"{'calls':<7}{'wall':<7}")
     print("\n" + hdr)
     print("-" * len(hdr))
+    footnotes = []
     for r in rows:
         if r.get("error"):
             print(f"{r['fault']:<28}{'':<8}ERROR: {r['error'][:60]}")
             continue
-        s = r["score"]
-        rc = "PASS" if s["root_cause_correct"] else f"x({s['root_cause_got']})"
-        print(f"{r['fault']:<28}{str(r['difficulty']):<8}{rc:<14}"
-              f"{'PASS' if s['mechanism_correct'] else 'x':<6}"
-              f"{'PASS' if s['fix_acceptable'] else 'x':<6}"
-              f"{r['tool_calls']:<7}{str(r['wall_seconds'])+'s':<7}")
+        rc = f"{r['root_cause_rate'][0]}/{r['root_cause_rate'][1]}"
+        mech = f"{r['mechanism_rate'][0]}/{r['mechanism_rate'][1]}"
+        fix = f"{r['fix_rate'][0]}/{r['fix_rate'][1]}"
+        deg = f" ({r['degraded_count']} forced)" if r.get("degraded_count") else ""
+        print(f"{r['fault']:<28}{str(r['difficulty']):<8}{rc:<11}{mech:<9}{fix:<9}"
+              f"{str(r['avg_tool_calls']):<7}{str(r['avg_wall'])+'s':<7}{deg}")
+        # disclose attribution variance: which models the agent named across trials
+        answers = r.get("root_cause_answers", {})
+        if len(answers) > 1 or (answers and r["root_cause_rate"][0] < r["root_cause_rate"][1]):
+            dist = ", ".join(f"{k}×{v}" for k, v in sorted(answers.items(), key=lambda kv: -kv[1]))
+            footnotes.append(f"  {r['fault']}: expected {r['expected_root_cause']}; "
+                             f"agent named {{{dist}}} across {r['n_scored']} trials")
     scored = [r for r in rows if not r.get("error")]
     if scored:
-        rc = sum(r["score"]["root_cause_correct"] for r in scored)
-        mech = sum(r["score"]["mechanism_correct"] for r in scored)
-        fix = sum(r["score"]["fix_acceptable"] for r in scored)
-        n = len(scored)
+        def tot(k):
+            return (sum(r[k][0] for r in scored), sum(r[k][1] for r in scored))
+        rc, mech, fix = tot("root_cause_rate"), tot("mechanism_rate"), tot("fix_rate")
         print("-" * len(hdr))
-        print(f"root_cause {rc}/{n}   mechanism {mech}/{n}   fix {fix}/{n}   "
-              f"(n={n}; {len(rows)-n} errored)")
+        print(f"root_cause {rc[0]}/{rc[1]}   mechanism {mech[0]}/{mech[1]}   "
+              f"fix {fix[0]}/{fix[1]}   (across {len(scored)} faults)")
+    if footnotes:
+        print("\nroot-cause attribution across trials (exact-match; nondeterministic):")
+        print("\n".join(footnotes))
 
 
 async def main() -> None:
@@ -129,6 +168,9 @@ async def main() -> None:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--all-faults", action="store_true")
     g.add_argument("--fault", help="single fault id")
+    ap.add_argument("--trials", type=int, default=1,
+                    help="investigations per fault; >1 reports pass RATES "
+                         "(the model is nondeterministic, so a single run is noisy)")
     args = ap.parse_args()
 
     specs = _load_specs()
@@ -146,8 +188,8 @@ async def main() -> None:
 
     rows = []
     for spec in targets:
-        print(f"\n=== {spec['id']} ===", flush=True)
-        rows.append(await _run_one(spec))
+        print(f"\n=== {spec['id']} ({args.trials} trial(s)) ===", flush=True)
+        rows.append(await _run_one(spec, trials=args.trials))
 
     print("\nleaving warehouse clean ...", flush=True)
     _retry("final reset", lambda: _inject("--reset"))

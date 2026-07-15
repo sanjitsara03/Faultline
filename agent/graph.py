@@ -22,15 +22,16 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
+from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
-from mcp_client import _env, M2MToken, REPO_ROOT 
+from mcp_client import _env, M2MToken, REPO_ROOT
 
 load_dotenv(REPO_ROOT / ".env")
 
 # Single model via OpenRouter
 MODEL = os.environ.get("FAULTLINE_MODEL", "minimax/minimax-m3")
-MAX_TOOL_CALLS = 25  # bounds cost; also an eval metric ("tool calls per investigation")
+MAX_TOOL_CALLS = 30  # bounds cost; also an eval metric ("tool calls per investigation")
 
 
 class Diagnosis(BaseModel):
@@ -82,10 +83,17 @@ Method (follow it, do not improvise the order):
    where the reconciliation first breaks and name that model.
 5. Stop when confirmed, or when you have exhausted upstream sources.
 
+Be decisive and efficient. Profile the metric's most direct inputs FIRST with a
+few high-signal checks (row counts, grain, null rates, value ranges before vs
+after onset) rather than broadly querying everything. As soon as one check shows
+what changed at onset, follow that single thread upstream to the model whose SQL
+is responsible — do not keep profiling unrelated columns, and never re-run a
+query whose answer you already have. Aim to conclude in well under your budget;
+commit to a diagnosis once the evidence identifies the responsible hop.
+
 Constraints: read-only SQL; results cap at 200 rows, so aggregate — never
-SELECT * over raw tables. Prefer a few sharp queries per hop over many broad
-ones. You have a budget of {max_calls} tool calls total. Dates in the data run
-2026-04-01 to 2026-07-10.
+SELECT * over raw tables. You have a budget of {max_calls} tool calls total.
+Dates in the data run 2026-04-01 to 2026-07-10.
 """
 
 
@@ -118,29 +126,77 @@ async def investigate(alert: str) -> dict:
     )
 
     started = time.monotonic()
-    # ~2 graph steps per tool call, plus slack for the final structured answer.
-    state = await agent.ainvoke(
-        {"messages": [("user", f"ALERT: {alert}")]},
-        config={"recursion_limit": MAX_TOOL_CALLS * 2 + 10,
-                "run_name": "faultline-investigation"},
-    )
-    wall = time.monotonic() - started
+    # Stream (not ainvoke) so that if the agent exhausts its budget we still hold
+    # the accumulated investigation and can force a best-effort answer instead of
+    # crashing. ~2 graph steps per tool call, plus slack for the final answer.
+    last_state = None
+    degraded = False
+    try:
+        async for chunk in agent.astream(
+            {"messages": [("user", f"ALERT: {alert}")]},
+            config={"recursion_limit": MAX_TOOL_CALLS * 2 + 10,
+                    "run_name": "faultline-investigation"},
+            stream_mode="values",
+        ):
+            last_state = chunk
+    except GraphRecursionError:
+        degraded = True  # budget exhausted before the agent committed
 
-    tool_calls = sum(
-        len(getattr(m, "tool_calls", []) or []) for m in state["messages"]
-    )
-    diagnosis: Diagnosis | None = state.get("structured_response")
+    messages = (last_state or {}).get("messages", [])
+    tool_calls = sum(len(getattr(m, "tool_calls", []) or []) for m in messages)
+
+    diagnosis: Diagnosis | None = (last_state or {}).get("structured_response")
     if diagnosis is None:
-        last = state["messages"][-1].content if state["messages"] else "(no messages)"
-        raise RuntimeError(
-            f"agent finished without a structured Diagnosis; final message: {last[:500]}"
-        )
+        # Graceful degradation: the agent ran out of budget without committing.
+        # Force a best-effort Diagnosis from the evidence it did gather.
+        degraded = True
+        diagnosis = await _force_diagnosis(llm, messages, alert)
+
+    wall = time.monotonic() - started
     return {
         "diagnosis": diagnosis.model_dump(),
         "tool_calls": tool_calls,
         "wall_seconds": round(wall, 1),
         "model": MODEL,
+        "degraded": degraded,
     }
+
+
+async def _force_diagnosis(llm, messages, alert: str) -> Diagnosis:
+    """Squeeze a best-effort Diagnosis out of a budget-exhausted investigation.
+
+    Flatten the trajectory to plain text (feeding raw messages risks a dangling
+    tool_call the chat API rejects), then ask for the structured verdict directly.
+    """
+    lines = []
+    for m in messages:
+        for tc in (getattr(m, "tool_calls", None) or []):
+            lines.append(f"CALLED {tc['name']}({tc.get('args', {})})")
+        content = getattr(m, "content", "")
+        if isinstance(content, str) and content.strip():
+            lines.append(content.strip()[:1500])
+    transcript = "\n".join(lines)[-12000:]  # keep the most recent evidence
+
+    prompt = (
+        f"ALERT: {alert}\n\nYour investigation so far (tool calls and results):\n"
+        f"{transcript}\n\nYou have exhausted your investigation budget. Output your "
+        "single best-effort Diagnosis now, based only on the evidence above. If "
+        "uncertain, give your most likely root_cause_model and lower the confidence."
+    )
+    try:
+        structured = llm.with_structured_output(Diagnosis)
+        return await structured.ainvoke(
+            [("system", SYSTEM_PROMPT.format(max_calls=MAX_TOOL_CALLS)),
+             ("user", prompt)]
+        )
+    except Exception as e:
+        return Diagnosis(
+            root_cause_model="inconclusive",
+            mechanism=f"Investigation did not converge within budget; forced summary failed ({e}).",
+            evidence=[],
+            proposed_fix="Re-run with a larger tool-call budget.",
+            confidence=0.0,
+        )
 
 
 def main() -> None:
