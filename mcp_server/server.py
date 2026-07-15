@@ -15,7 +15,11 @@ from pathlib import Path
 import psycopg2
 import psycopg2.errors
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+# fastmcp 2.x, not the official SDK's mcp.server.fastmcp: MintMCP's startup
+# probe opens GET /mcp without the strict Accept header the official SDK
+# demands (it 406s), so the probe times out and hosted deploys fail with
+# empty logs. fastmcp 2.x is what MintMCP's own template documents.
+from fastmcp import FastMCP
 from psycopg2 import sql
 
 ROW_CAP = 200  # hard cap on rows returned by any query
@@ -227,4 +231,14 @@ def inspect_schema(table: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()  # stdio transport (FastMCP default) — what MintMCP hosts
+    # Two transports: stdio for local dev (test_client.py spawns us as a child
+    # process); streamable HTTP in the MintMCP-hosted container (their platform
+    # probes /mcp on :8000). The Dockerfile sets MCP_TRANSPORT=http.
+    if os.environ.get("MCP_TRANSPORT") == "http":
+        # MintMCP's runtime assigns the port via the PORT env var (despite the
+        # docs saying "serve on 8000" — their probe connects to $PORT, verified
+        # in hosted-cli source). 8000 stays the fallback for manual runs.
+        port = int(os.environ.get("PORT", "8000"))
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=port, path="/mcp")
+    else:
+        mcp.run()
