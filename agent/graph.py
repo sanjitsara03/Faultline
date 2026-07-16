@@ -40,7 +40,11 @@ _NO_TEMPERATURE = ("gpt-5", "o1", "o3", "o4", "deepseek-r1")
 
 def _build_llm(model: str) -> ChatOpenAI:
     kwargs = {"model": model, "api_key": _env("OPENROUTER_API_KEY"),
-              "base_url": "https://openrouter.ai/api/v1"}
+              "base_url": "https://openrouter.ai/api/v1",
+              # Ask for token usage on streamed responses (sets
+              # stream_options.include_usage, which OpenRouter honors) so
+              # LangSmith records tokens/cost for the streamed agent turns.
+              "stream_usage": True}
     if not any(p in model for p in _NO_TEMPERATURE):
         kwargs["temperature"] = 0
     return ChatOpenAI(**kwargs)
@@ -87,12 +91,25 @@ Method (follow it, do not improvise the order):
      data now violates.
 4. A hypothesis is CONFIRMED only when you have query evidence of the defect in
    the data or model logic, not just a plausible story. The root cause is the
-   SINGLE model whose own SQL first turns correct inputs into incorrect output —
-   the hop where its output stops reconciling with its inputs. It is NOT an
-   upstream table merely carrying anomalous rows (that data is an input the model
-   mishandles), and it is NOT a downstream model that only aggregates or passes
-   through output that was already wrong when it arrived. Trace to the exact hop
-   where the reconciliation first breaks and name that model.
+   SINGLE model whose own SQL OWNS the assumption the anomalous data violates —
+   the model that had the responsibility and the opportunity to handle this
+   condition and did not. It takes one of two shapes:
+   (a) a model whose transformation logic is itself unsafe given the data — a
+       join that assumes a uniqueness or grain it does not enforce, an
+       aggregation that assumes a grain — so its own SQL actively produces the
+       wrong output; or
+   (b) a staging/cleaning model that is the designated place to validate or
+       normalize a source field and forwards an out-of-contract value without the
+       guard it owns (no null, range, or unit check) — the flaw is the MISSING
+       guard, even though the model's mechanical SQL ran exactly as written.
+   Priority: if some model's own transformation logic is unsafe, name that model
+   (a). Only if every model on the path processes the value correctly by its own
+   SQL semantics — a SUM that correctly skips NULLs, a cast that faithfully passes
+   a value through — and the value is simply wrong from the source, attribute to
+   the staging/cleaning model that should have caught or normalized it (b). In
+   neither case is the root cause the raw source table (it only delivered the
+   values), nor a downstream model that correctly aggregates or forwards values
+   that were already wrong when they arrived.
 5. Stop when confirmed, or when you have exhausted upstream sources.
 
 Be decisive and efficient. Profile the metric's most direct inputs FIRST with a

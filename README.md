@@ -60,44 +60,64 @@ something.
    fix.
 
 ```bash
-uv run python harness/harness.py --all-faults --trials 5     # the scored eval
+uv run python harness/harness.py --all-faults --trials 5 --model openai/gpt-5   # scored eval (any OpenRouter model)
 ```
 
 ---
 
 ## Eval results
 
-Three faults — one fan-out join, one silent NULL, one unit change. `--trials 5` because
-**the model (minimax-m3) is not deterministic even at temperature 0** (MoE routing), so
-a single run is noisy — we report *rates*.
+Three faults (fan-out join, silent NULL, unit change), 5 trials each, **five investigator
+models** swept through the same gateway with the judge fixed at `gpt-4o-mini` for
+fairness. Models are nondeterministic even at temperature 0, so we report *rates*, not
+single runs. Each diagnosis is scored on **three independent dimensions**:
 
-5 trials/fault. Investigator: `minimax/minimax-m3`. Judge (mechanism + fix): `openai/gpt-4o-mini`.
+- **Root cause** — exact string match on the single dbt node where the defect lives.
+  Objective, no LLM in the loop. Deliberately strict.
+- **Mechanism** — LLM-judged: does the explanation capture the same causal story as
+  ground truth?
+- **Fix** — LLM-judged: would the proposed remediation actually work (match an
+  acceptable fix)?
 
-| Fault | Class | Root cause | Mechanism | Fix | Tool calls | Wall |
-|---|---|---|---|---|---|---|
-| `fanout_orders_shipments` | fan-out join | **5/5** | **5/5** | **5/5** | 16 | 99s |
-| `silent_null_payments` | silent NULL | 3/5 | **5/5** | 4/5 | 34 | 224s |
-| `unit_change_bank_transfer` | unit change | 3/5 | **5/5** | 4/5 | 30 | 269s |
-| **Total** | | **11/15** | **15/15** | **13/15** | | |
+| Model | Root cause | Mechanism | Fix | Errored | Avg calls |
+|---|---|---|---|---|---|
+| **`openai/gpt-5`** | **10/15** | **15/15** | **15/15** | 0 | ~10 |
+| `openai/gpt-5-mini` | 7/15 | 13/15 | 10/15 | 0 | ~9 |
+| `xiaomi/mimo-v2.5-pro` | 6/9 | 9/9 | 8/9 | 6 | ~17 |
+| `minimax/minimax-m3` | 6/13 | 13/13 | 8/13 | 2 | ~26 |
+| `google/gemini-2.5-flash` | 9/15 | 0/15 | 4/15 | 0 | ~18 |
 
-Root cause is exact-match on the model name; mechanism and fix are LLM-judged. Where
-root cause < 5/5, the agent named a *defensible adjacent* model on the fault path
-(disclosed, not hidden):
+**`gpt-5` wins cleanly** — perfect mechanism and fix, best root-cause, efficient (~10
+tool calls), zero errors or degradation. Reading the rest:
 
-- `silent_null_payments` — expected `stg_payments`; agent named `stg_payments ×3, int_orders_joined ×2`
-- `unit_change_bank_transfer` — expected `stg_payments`; agent named `stg_payments ×3, int_orders_joined ×1, raw_payments ×1`
+- **`gpt-5-mini`** is the value pick — near-frontier mechanism (13/15) at a fraction of
+  the cost, zero errors, ~9 calls.
+- **Xiaomi `mimo-v2.5-pro`** matches frontier *quality* when it completes (9/9 mechanism)
+  but **6 of 15 trials errored** — great but unreliable.
+- **`minimax-m3`** has perfect mechanism but is slow (~26 calls) and weaker on exact
+  attribution.
+- **`gemini-2.5-flash`** is the cautionary tale — fast and often names the right model,
+  but **mechanism 0/15**: its explanations are consistently too imprecise for the judge.
 
-**What's honest about this table:**
+**Why three dimensions — a diagnosis can have a correct fix but a "wrong" root cause.**
+On silent-null, `gpt-5` named `raw_payments` (the source *carrying* the NULLs) where
+ground truth is `stg_payments` (the model that should *guard* them) — an exact-match miss.
+Yet its mechanism was right, and its proposed fix ("add a not-null test on
+`stg_payments.amount`") was exactly an acceptable fix. The agent understood the bug and
+targeted the right model to fix; it only tripped on labeling a single "most-responsible"
+node. One collapsed "accuracy" number would hide that — three dimensions expose it.
 
-- **Mechanism accuracy is the stable signal** — the agent reliably explains *what* is
-  wrong. **Exact root-cause-model attribution is noisier**, and only on the faults whose
-  responsible hop is genuinely debatable (e.g. a silent NULL: is the root cause the
-  staging model that passes NULLs through unguarded, or the model whose `SUM()` silently
-  drops them? Both are defensible). We keep exact-match scoring **strict** and disclose
-  the per-fault answer distribution rather than loosening the metric to look better.
-- We report **rates over N trials**, not a single lucky/unlucky run.
-- The agent that runs out of tool budget **degrades gracefully** to a best-effort
-  diagnosis (marked) rather than crashing — so every fault yields a scored data point.
+**Honest caveats:**
+- **Denominators differ** — `mimo` (9) and `minimax` (13) have fewer scored trials because
+  some errored, so their rates rest on less data.
+- **Mechanism reflects the fixed `gpt-4o-mini` judge's strictness** — gemini's 0/15 is
+  partly the judge being harsh on gemini's terse style, not purely gemini being wrong.
+- **Exact root-cause stays modest across all models**, bounded by two genuinely-ambiguous
+  faults (is the culprit the model that lets bad data through, or the one whose
+  aggregation breaks on it?). Mechanism is the cleaner discriminator. We keep exact-match
+  strict and disclose the answer distribution rather than loosen the metric to look better.
+- Agents that exhaust the tool-call budget **degrade gracefully** to a best-effort answer
+  rather than crashing, so every non-errored trial yields a scored data point.
 
 ---
 
@@ -152,7 +172,7 @@ cp .env.example .env         # set DATABASE_URL + MINTMCP_* + OPENROUTER_API_KEY
 uv run python warehouse/seed/generate.py         # seed
 uv run python warehouse/run_dbt.py run           # build models
 uv run python faults/inject.py --fault fanout_orders_shipments   # break something
-uv run python harness/harness.py --all-faults --trials 5         # diagnose + score
+uv run python harness/harness.py --all-faults --trials 5 --model openai/gpt-5   # diagnose + score
 uv run python harness/adversarial.py --all --naive               # injection demo
 ```
 
