@@ -2,8 +2,7 @@
 that is the investigating agent's entire starting knowledge.
 
 This is harness/test infrastructure: it has direct DB access and knows the metric
-catalog, but it NEVER reads fault specs. The asymmetry (detector is fault-blind,
-harness holds ground truth) is what makes the eval numbers trustworthy.
+catalog, but it NEVER reads fault specs.
 """
 
 from __future__ import annotations

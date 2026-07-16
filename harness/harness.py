@@ -2,8 +2,7 @@
 
 For each fault: reset -> inject -> detect -> investigate (through the gateway) ->
 score against YAML ground truth -> append a row. The agent sees only the detector's
-alert; the harness holds the ground truth. That asymmetry is what makes the numbers
-mean something.
+alert; the harness holds the ground truth.
 
     uv run python harness/harness.py --all-faults
     uv run python harness/harness.py --fault silent_null_payments
@@ -14,6 +13,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import re
 import subprocess
 import sys
 import time
@@ -31,6 +32,11 @@ import scoring           # noqa: E402
 
 FAULTS_DIR = REPO_ROOT / "faults"
 RESULTS_PATH = REPO_ROOT / "harness" / "results.json"
+RESULTS_DIR = REPO_ROOT / "harness" / "results"
+
+
+def _slug(model: str) -> str:
+    return re.sub(r"[^\w.-]", "_", model)
 
 
 def _load_specs() -> dict[str, dict]:
@@ -68,12 +74,12 @@ def _reset_and_inject(fault_id: str) -> None:
     _inject("--fault", fault_id)
 
 
-async def _one_trial(spec: dict, alert_text: str) -> dict:
+async def _one_trial(spec: dict, alert_text: str, model: str | None) -> dict:
     """One investigation on an already-injected warehouse. The agent is read-only,
     so repeated trials on the same injected state don't contaminate each other —
     that's what lets us amortize one reseed over N trials."""
     try:
-        result = await graph.investigate(alert_text)
+        result = await graph.investigate(alert_text, model=model)
     except Exception as e:
         return {"error": f"agent: {e}"}
     s = scoring.score(result["diagnosis"], spec["ground_truth"])
@@ -83,6 +89,7 @@ async def _one_trial(spec: dict, alert_text: str) -> dict:
         "tool_calls": result["tool_calls"],
         "wall_seconds": result["wall_seconds"],
         "degraded": result.get("degraded", False),
+        "model": result["model"],
     }
 
 
@@ -93,6 +100,8 @@ def _aggregate(spec: dict, alert_text: str, trials: list[dict]) -> dict:
     answers = Counter(t["score"]["root_cause_got"] for t in ok)
     return {
         "fault": spec["id"],
+        "model": ok[0]["model"] if ok else None,
+        "judge_model": os.environ.get("FAULTLINE_JUDGE_MODEL", "openai/gpt-4o-mini"),
         "category": spec.get("category"),
         "difficulty": spec.get("difficulty"),
         "alert": alert_text,
@@ -110,7 +119,7 @@ def _aggregate(spec: dict, alert_text: str, trials: list[dict]) -> dict:
     }
 
 
-async def _run_one(spec: dict, trials: int = 1) -> dict:
+async def _run_one(spec: dict, trials: int = 1, model: str | None = None) -> dict:
     fault_id = spec["id"]
     print(f"  reset + inject {fault_id} ...", flush=True)
     _retry(f"reset+inject {fault_id}", lambda: _reset_and_inject(fault_id))
@@ -124,7 +133,7 @@ async def _run_one(spec: dict, trials: int = 1) -> dict:
     results = []
     for t in range(trials):
         print(f"  trial {t + 1}/{trials} ...", flush=True)
-        results.append(await _one_trial(spec, alert_text))
+        results.append(await _one_trial(spec, alert_text, model))
     return _aggregate(spec, alert_text, results)
 
 
@@ -171,6 +180,9 @@ async def main() -> None:
     ap.add_argument("--trials", type=int, default=1,
                     help="investigations per fault; >1 reports pass RATES "
                          "(the model is nondeterministic, so a single run is noisy)")
+    ap.add_argument("--model", default=None,
+                    help="investigator model (default: $FAULTLINE_MODEL or minimax-m3); "
+                         "when set, results write to harness/results/<model>.json")
     args = ap.parse_args()
 
     specs = _load_specs()
@@ -186,17 +198,28 @@ async def main() -> None:
     else:
         targets = diagnostic
 
+    # A named --model run writes its own file so a multi-model sweep doesn't
+    # clobber; the default run keeps the canonical results.json.
+    if args.model:
+        RESULTS_DIR.mkdir(exist_ok=True)
+        out_path = RESULTS_DIR / f"{_slug(args.model)}.json"
+    else:
+        out_path = RESULTS_PATH
+
     rows = []
     for spec in targets:
         print(f"\n=== {spec['id']} ({args.trials} trial(s)) ===", flush=True)
-        rows.append(await _run_one(spec, trials=args.trials))
+        rows.append(await _run_one(spec, trials=args.trials, model=args.model))
+        # Checkpoint after every fault so an interrupted run keeps its progress.
+        out_path.write_text(json.dumps(rows, indent=2, default=str))
+        print(f"  checkpointed {len(rows)}/{len(targets)} -> {out_path.relative_to(REPO_ROOT)}", flush=True)
 
     print("\nleaving warehouse clean ...", flush=True)
     _retry("final reset", lambda: _inject("--reset"))
 
     _print_table(rows)
-    RESULTS_PATH.write_text(json.dumps(rows, indent=2, default=str))
-    print(f"\nresults written to {RESULTS_PATH.relative_to(REPO_ROOT)}")
+    out_path.write_text(json.dumps(rows, indent=2, default=str))
+    print(f"\nresults written to {out_path.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

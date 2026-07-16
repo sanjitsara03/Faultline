@@ -1,0 +1,496 @@
+[
+  {
+    "fault": "fanout_orders_shipments",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "fan_out_join",
+    "difficulty": "medium",
+    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
+    "expected_root_cause": "int_orders_joined",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      4,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      4,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 1,
+      "int_orders_joined": 4
+    },
+    "avg_tool_calls": 5.2,
+    "avg_wall": 15.2,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is incorrectly filtering or transforming data, causing an inflated `orders_count` metric in downstream models. The raw data shows correct counts, but `stg_orders` output is higher than expected starting on 2026-06-27. This propagates to `int_orders_joined` and `mart_revenue_daily`.",
+          "evidence": [
+            "`mart_revenue_daily` shows orders_count of 454 on 2026-06-27, while `int_orders_joined` also shows 454. However, `stg_orders` shows 369 for the same date, and `raw_orders` also shows 369. This indicates a discrepancy introduced at the `stg_orders` level, where the count is inflated before being passed to `int_orders_joined` and `mart_revenue_daily`.",
+            "The `stg_orders` model's raw_code is `select order_id, customer_id, ordered_at::timestamp as ordered_at, status, currency, _loaded_at::timestamp as loaded_at from {{ source('raw', 'raw_orders') }}`. This code does not contain any explicit filtering or aggregation that would cause an inflation of order counts. The issue is likely in how `stg_orders` is materialized or how `raw_orders` is being read into `stg_orders`.",
+            "The `stg_orders` model is a view, so it should directly reflect the underlying `raw_orders` table. The discrepancy between `stg_orders` and `raw_orders` suggests an issue with the view definition or the underlying data itself, but the counts from `raw_orders` match the expected counts, so the issue is with `stg_orders`."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model definition and its materialization. Ensure that the view is correctly reflecting the `raw_orders` table without any unintended duplications or transformations. If the view definition is correct, investigate the dbt run process for `stg_orders` to ensure it is not introducing duplicate records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation attributes the issue to incorrect filtering in the `stg_orders` model, while the ground truth identifies a problem with duplicate shipment rows affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on the `stg_orders` model rather than addressing the duplication issue in `stg_shipments` or pre-aggregating shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 19.2,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is incorrectly joining stg_orders with stg_payments, stg_shipments, and stg_refunds. Specifically, the LEFT JOINs are causing duplicate orders to be introduced when there are multiple payments, shipments, or refunds for a single order, leading to an inflated orders_count.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily and int_orders_joined show 364 orders, while stg_orders shows 339 orders. This indicates 25 duplicate orders were introduced in int_orders_joined.",
+            "On 2026-06-27, mart_revenue_daily and int_orders_joined show 454 orders, while stg_orders shows 369 orders. This indicates 85 duplicate orders were introduced in int_orders_joined.",
+            "The discrepancy between int_orders_joined and stg_orders starts on 2026-06-26, which is just before the alert onset date of 2026-06-27."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to ensure that each order is counted only once. This can be achieved by either aggregating payments, shipments, and refunds before joining, or by using a distinct count of order_id in the final selection.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the incorrect joining of multiple tables leading to inflated order counts, while the ground truth specifically addresses duplicate shipment rows causing revenue to be counted twice.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of aggregating shipments before the join aligns with the acceptable fix of pre-aggregating shipments to order grain."
+        },
+        "tool_calls": 5,
+        "wall_seconds": 14.0,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is incorrectly joining stg_orders with stg_payments, stg_shipments, and stg_refunds. Specifically, the LEFT JOINs are causing duplicate orders to be introduced when there are multiple payments, shipments, or refunds for a single order, leading to an inflated orders_count.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily and int_orders_joined show 364 orders, while stg_orders shows 339 orders. This indicates 25 duplicate orders were introduced in int_orders_joined.",
+            "On 2026-06-27, mart_revenue_daily and int_orders_joined show 454 orders, while stg_orders shows 369 orders. This indicates 85 duplicate orders were introduced in int_orders_joined.",
+            "The discrepancy between int_orders_joined and stg_orders starts on 2026-06-26, which is just before the alert onset date of 2026-06-27."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to ensure that each order is counted only once. This can be achieved by either aggregating payments, shipments, and refunds before joining, or by using a distinct count of order_id in the final selection.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the incorrect joining of multiple tables leading to inflated counts, while the ground truth specifically addresses the issue of duplicate shipment rows affecting revenue calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of aggregating shipments before the join aligns with the acceptable fix of pre-aggregating shipments to order grain."
+        },
+        "tool_calls": 5,
+        "wall_seconds": 14.8,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is incorrectly joining stg_orders with stg_payments, stg_shipments, and stg_refunds. Specifically, the LEFT JOINs are causing duplicate orders to be introduced when there are multiple payments, shipments, or refunds for a single order, leading to an inflated orders_count.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily and int_orders_joined show 364 orders, while stg_orders shows 339 orders. This indicates 25 duplicate orders were introduced in int_orders_joined.",
+            "On 2026-06-27, mart_revenue_daily and int_orders_joined show 454 orders, while stg_orders shows 369 orders. This indicates 85 duplicate orders were introduced in int_orders_joined.",
+            "The discrepancy between int_orders_joined and stg_orders starts on 2026-06-26, which is just before the alert onset date of 2026-06-27."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to ensure that each order is counted only once. This can be achieved by either aggregating payments, shipments, and refunds before joining, or by using a distinct count of order_id in the final selection.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the incorrect joining of multiple tables leading to inflated counts, while the ground truth specifically identifies duplicate shipment rows causing revenue to be counted twice.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix aligns with the acceptable fix of pre-aggregating shipments to order grain before the join in int_orders_joined."
+        },
+        "tool_calls": 5,
+        "wall_seconds": 13.5,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is incorrectly joining stg_orders with stg_payments, stg_shipments, and stg_refunds. Specifically, the LEFT JOINs are causing duplicate orders to be introduced when there are multiple payments, shipments, or refunds for a single order, leading to an inflated orders_count.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily and int_orders_joined show 364 orders, while stg_orders shows 339 orders. This indicates 25 duplicate orders were introduced in int_orders_joined.",
+            "On 2026-06-27, mart_revenue_daily and int_orders_joined show 454 orders, while stg_orders shows 369 orders. This indicates 85 duplicate orders were introduced in int_orders_joined.",
+            "The discrepancy between int_orders_joined and stg_orders starts on 2026-06-26, which is just before the alert onset date of 2026-06-27."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to ensure that each order is counted only once. This can be achieved by either aggregating payments, shipments, and refunds before joining, or by using a distinct count of order_id in the final selection.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the incorrect joining of multiple tables, while the ground truth specifically addresses the issue of duplicate shipment rows affecting revenue calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of aggregating shipments before the join aligns with the acceptable fix of pre-aggregating shipments to order grain."
+        },
+        "tool_calls": 5,
+        "wall_seconds": 14.4,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  },
+  {
+    "fault": "silent_null_payments",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "silent_null",
+    "difficulty": "medium",
+    "alert": "net_revenue in mart_revenue_daily is -33% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      5,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      0,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_payments": 5
+    },
+    "avg_tool_calls": 35.0,
+    "avg_wall": 112.6,
+    "degraded_count": 5,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "The stg_payments model is missing payment records for orders, causing a decrease in net_revenue. The number of missing payments significantly increases starting on 2026-06-28, which directly correlates with the onset of the alert.",
+          "evidence": [
+            "On 2026-06-27, missing_payments was 0. On 2026-06-28, missing_payments jumped to 10. On 2026-06-29, missing_payments was 11. On 2026-06-30, missing_payments was 12. This trend continues through 2026-07-05, with missing_payments ranging from 10 to 12 daily, indicating a consistent issue with payments not being staged.",
+            "The `stg_orders` model shows consistent order counts before and after the anomaly, while the `stg_payments` model shows a clear drop in `payments_count` relative to `order_count` starting on 2026-06-28."
+          ],
+          "proposed_fix": "Investigate the upstream source for `stg_payments` to determine why payment records are not being ingested or processed correctly starting on 2026-06-28. Adjust the logic in `stg_payments` to correctly capture all payment records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on missing payment records rather than the issue of NULL amounts being unchecked in the success filter.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on investigating upstream issues rather than directly addressing the NULL amount problem in stg_payments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 113.6,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "The stg_payments model is missing payment records for orders, causing a decrease in net_revenue. The number of missing payments significantly increases starting on 2026-06-28, which directly correlates with the onset of the alert.",
+          "evidence": [
+            "On 2026-06-27, missing_payments was 0. On 2026-06-28, missing_payments jumped to 10. On 2026-06-29, missing_payments was 11. On 2026-06-30, missing_payments was 12. This trend continues through 2026-07-05, with missing_payments ranging from 10 to 12 daily, indicating a consistent issue with payments not being staged.",
+            "The `stg_orders` model shows consistent order counts before and after the anomaly, while the `stg_payments` model shows a clear drop in `payments_count` relative to `order_count` starting on 2026-06-28."
+          ],
+          "proposed_fix": "Investigate the upstream source for `stg_payments` to determine why payment records are not being ingested or processed correctly starting on 2026-06-28. Adjust the logic in `stg_payments` to correctly capture all payment records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on missing payment records rather than the issue of NULL amounts being unchecked in the success filter.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on investigating upstream issues rather than directly addressing the NULL amount problem in stg_payments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 113.0,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "The stg_payments model is missing payment records for orders, causing a decrease in net_revenue. The number of missing payments significantly increases starting on 2026-06-28, which directly correlates with the onset of the alert.",
+          "evidence": [
+            "On 2026-06-27, missing_payments was 0. On 2026-06-28, missing_payments jumped to 10. On 2026-06-29, missing_payments was 11. On 2026-06-30, missing_payments was 12. This trend continues through 2026-07-05, with missing_payments ranging from 10 to 12 daily, indicating a consistent issue with payments not being staged.",
+            "The `stg_orders` model shows consistent order counts before and after the anomaly, while the `stg_payments` model shows a clear drop in `payments_count` relative to `order_count` starting on 2026-06-28."
+          ],
+          "proposed_fix": "Investigate the upstream source for `stg_payments` to determine why payment records are not being ingested or processed correctly starting on 2026-06-28. Adjust the logic in `stg_payments` to correctly capture all payment records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on missing payment records rather than the issue of NULL amounts being unchecked in the success filter.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on investigating upstream issues rather than directly addressing the NULL amount problem in stg_payments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 111.6,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "The stg_payments model is missing payment records for orders, causing a decrease in net_revenue. The number of missing payments significantly increases starting on 2026-06-28, which directly correlates with the onset of the alert.",
+          "evidence": [
+            "On 2026-06-27, missing_payments was 0. On 2026-06-28, missing_payments jumped to 10. On 2026-06-29, missing_payments was 11. On 2026-06-30, missing_payments was 12. This trend continues through 2026-07-05, with missing_payments ranging from 10 to 12 daily, indicating a consistent issue with payments not being staged.",
+            "The `stg_orders` model shows consistent order counts before and after the anomaly, while the `stg_payments` model shows a clear drop in `payments_count` relative to `order_count` starting on 2026-06-28."
+          ],
+          "proposed_fix": "Investigate the upstream source for `stg_payments` to determine why payment records are not being ingested or processed correctly starting on 2026-06-28. Adjust the logic in `stg_payments` to correctly capture all payment records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on missing payment records rather than the issue of NULL amounts being unchecked in the success filter.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on investigating upstream issues rather than directly addressing the NULL amount problem in stg_payments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 115.3,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "The stg_payments model is missing payment records for orders, causing a decrease in net_revenue. The number of missing payments significantly increases starting on 2026-06-28, which directly correlates with the onset of the alert.",
+          "evidence": [
+            "On 2026-06-27, missing_payments was 0. On 2026-06-28, missing_payments jumped to 10. On 2026-06-29, missing_payments was 11. On 2026-06-30, missing_payments was 12. This trend continues through 2026-07-05, with missing_payments ranging from 10 to 12 daily, indicating a consistent issue with payments not being staged.",
+            "The `stg_orders` model shows consistent order counts before and after the anomaly, while the `stg_payments` model shows a clear drop in `payments_count` relative to `order_count` starting on 2026-06-28."
+          ],
+          "proposed_fix": "Investigate the upstream source for `stg_payments` to determine why payment records are not being ingested or processed correctly starting on 2026-06-28. Adjust the logic in `stg_payments` to correctly capture all payment records.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on missing payment records rather than the lack of a not_null test on amounts, which is the core issue identified in the ground truth.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on investigating upstream issues rather than directly addressing the NULL amount problem in stg_payments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 109.5,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  },
+  {
+    "fault": "unit_change_bank_transfer",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "unit_change",
+    "difficulty": "easy",
+    "alert": "net_revenue in mart_revenue_daily is +393% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      0,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      0,
+      5
+    ],
+    "root_cause_answers": {
+      "int_orders_joined": 5
+    },
+    "avg_tool_calls": 13.4,
+    "avg_wall": 38.9,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is incorrectly calculating order_revenue by joining stg_payments to stg_orders. Since an order can have multiple payments (as evidenced by order O027848 on 2026-06-28 having two payments), this join creates duplicate rows for orders with multiple payments, leading to the sum of order_revenue being inflated. This inflation started on 2026-06-28, causing the net_revenue in mart_revenue_daily to be artificially high.",
+          "evidence": [
+            "On 2026-06-28, order O027848 has two payments: 1.50 and 8.49. In int_orders_joined, these payments are summed up, leading to an inflated order_revenue for this order. This pattern is observed for multiple orders from 2026-06-28 onwards.",
+            "The net_revenue in mart_revenue_daily and the recomputed net_revenue from int_orders_joined match exactly, confirming that the issue originates in int_orders_joined.",
+            "The total payments calculated directly from stg_payments for 2026-06-28 is 147033.18, while the sum of order_revenue from int_orders_joined for the same day is 146783.23. This discrepancy, along with the presence of multiple payments per order, indicates the join issue."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to aggregate payments by order_id in stg_payments *before* joining to stg_orders. This will ensure each order has a single, correct order_revenue value.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.5,
+          "mechanism_reason": "The agent's explanation focuses on duplicate rows from multiple payments inflating revenue, while the ground truth emphasizes the lack of unit normalization in the payment amounts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts or the sanity bound test on stg_payments.amount."
+        },
+        "tool_calls": 15,
+        "wall_seconds": 43.8,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model incorrectly calculates order_revenue by joining stg_payments to stg_orders. When an order has multiple payments, this join creates duplicate rows for the order, leading to the payment amount being counted multiple times. This inflates the total_revenue and subsequently the net_revenue.",
+          "evidence": [
+            "On 2026-06-28, int_orders_joined reports a total_revenue of 146783.23, while the sum of payments from stg_payments for the same day is 147033.18. This discrepancy is due to the join logic.",
+            "Orders with multiple payments are present both before and after the onset date, but the impact on net_revenue became significant on 2026-06-28.",
+            "For example, order 'O027848' on 2026-06-28 has two payments (1.50 and 8.49), which are both included in the `int_orders_joined` output, leading to double counting for this order."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to aggregate payments by order_id *before* joining to stg_orders. This will ensure each payment amount is counted only once per order.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate rows from joining tables, while the ground truth identifies a lack of unit normalization and sanity checks on payment amounts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts or the sanity bound test on stg_payments.amount."
+        },
+        "tool_calls": 13,
+        "wall_seconds": 37.9,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model incorrectly calculates order_revenue by joining stg_payments to stg_orders. When an order has multiple payments, this join creates duplicate rows for the order, leading to the payment amount being counted multiple times. This inflates the total_revenue and subsequently the net_revenue.",
+          "evidence": [
+            "On 2026-06-28, int_orders_joined reports a total_revenue of 146783.23, while the sum of payments from stg_payments for the same day is 147033.18. This discrepancy is due to the join logic.",
+            "Orders with multiple payments are present both before and after the onset date, but the impact on net_revenue became significant on 2026-06-28.",
+            "For example, order 'O027848' on 2026-06-28 has two payments (1.50 and 8.49), which are both included in the `int_orders_joined` output, leading to double counting for this order."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to aggregate payments by order_id *before* joining to stg_orders. This will ensure each payment amount is counted only once per order.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate rows from joining tables, while the ground truth identifies a lack of unit normalization and sanity checks in the payment amounts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts or the sanity bound test on stg_payments.amount."
+        },
+        "tool_calls": 13,
+        "wall_seconds": 36.6,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model incorrectly calculates order_revenue by joining stg_payments to stg_orders. When an order has multiple payments, this join creates duplicate rows for the order, leading to the payment amount being counted multiple times. This inflates the total_revenue and subsequently the net_revenue.",
+          "evidence": [
+            "On 2026-06-28, int_orders_joined reports a total_revenue of 146783.23, while the sum of payments from stg_payments for the same day is 147033.18. This discrepancy is due to the join logic.",
+            "Orders with multiple payments are present both before and after the onset date, but the impact on net_revenue became significant on 2026-06-28.",
+            "For example, order 'O027848' on 2026-06-28 has two payments (1.50 and 8.49), which are both included in the `int_orders_joined` output, leading to double counting for this order."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to aggregate payments by order_id *before* joining to stg_orders. This will ensure each payment amount is counted only once per order.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.3,
+          "mechanism_reason": "The agent's explanation focuses on duplicate rows from joining tables, while the ground truth identifies a lack of unit normalization and sanity checks in the payment amounts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts or the sanity bound test on stg_payments.amount."
+        },
+        "tool_calls": 13,
+        "wall_seconds": 38.6,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model incorrectly calculates order_revenue by joining stg_payments to stg_orders. When an order has multiple payments, this join creates duplicate rows for the order, leading to the payment amount being counted multiple times. This inflates the total_revenue and subsequently the net_revenue.",
+          "evidence": [
+            "On 2026-06-28, int_orders_joined reports a total_revenue of 146783.23, while the sum of payments from stg_payments for the same day is 147033.18. This discrepancy is due to the join logic.",
+            "Orders with multiple payments are present both before and after the onset date, but the impact on net_revenue became significant on 2026-06-28.",
+            "For example, order 'O027848' on 2026-06-28 has two payments (1.50 and 8.49), which are both included in the `int_orders_joined` output, leading to double counting for this order."
+          ],
+          "proposed_fix": "Modify the int_orders_joined model to aggregate payments by order_id *before* joining to stg_orders. This will ensure each payment amount is counted only once per order.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.3,
+          "mechanism_reason": "The agent's explanation focuses on duplicate rows from joining tables, while the ground truth identifies a lack of unit normalization and sanity checks on payment amounts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts or the sanity bound test on stg_payments.amount."
+        },
+        "tool_calls": 13,
+        "wall_seconds": 37.5,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  }
+]

@@ -1,6 +1,6 @@
 """Stdio MCP test client for the Faultline server — spawns server.py and exercises
 all three tools against the live warehouse. Prints results; exits nonzero on any
-failure. Doubles as the debugging probe for the MintMCP deployment.
+failure.
 
 Run: uv run python mcp_server/test_client.py
 """
@@ -67,8 +67,7 @@ async def main() -> None:
                   r.get("truncated") is True and r.get("row_count") == 200,
                   f"row_count: {r.get('row_count')}, truncated: {r.get('truncated')}")
 
-            # 4. Trimmed manifest — meta.dbt_artifacts is being created by a
-            # parallel workstream; its instructive error counts as PASS for now.
+            # 4. Trimmed manifest
             r = await call("get_dbt_artifacts", {"artifact": "manifest"})
             if "error" in r:
                 check("get_dbt_artifacts('manifest') — table pending, instructive error",

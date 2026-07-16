@@ -2,7 +2,7 @@
 warehouse failures from a single metric-anomaly alert.
 
 One LLM node + one tool node, looping. The
-investigation *method* lives in the system prompt; the graph is plumbing.
+investigation *method* lives in the system prompt.
 All tools arrive through the MintMCP gateway (M2M-authenticated) — the agent
 has no direct database access and never sees fault specs or ground truth.
 
@@ -29,9 +29,21 @@ from mcp_client import _env, M2MToken, REPO_ROOT
 
 load_dotenv(REPO_ROOT / ".env")
 
-# Single model via OpenRouter
-MODEL = os.environ.get("FAULTLINE_MODEL", "minimax/minimax-m3")
+DEFAULT_MODEL = "minimax/minimax-m3"
+MODEL = os.environ.get("FAULTLINE_MODEL", DEFAULT_MODEL)
 MAX_TOOL_CALLS = 30  # bounds cost; also an eval metric ("tool calls per investigation")
+
+# Reasoning models reject an explicit temperature override (they run at a fixed
+# temperature); pass temperature only to models that accept it.
+_NO_TEMPERATURE = ("gpt-5", "o1", "o3", "o4", "deepseek-r1")
+
+
+def _build_llm(model: str) -> ChatOpenAI:
+    kwargs = {"model": model, "api_key": _env("OPENROUTER_API_KEY"),
+              "base_url": "https://openrouter.ai/api/v1"}
+    if not any(p in model for p in _NO_TEMPERATURE):
+        kwargs["temperature"] = 0
+    return ChatOpenAI(**kwargs)
 
 
 class Diagnosis(BaseModel):
@@ -97,8 +109,9 @@ Dates in the data run 2026-04-01 to 2026-07-10.
 """
 
 
-async def investigate(alert: str) -> dict:
+async def investigate(alert: str, model: str | None = None) -> dict:
     """Run one investigation. Returns {diagnosis, tool_calls, wall_seconds, model}."""
+    model = model or os.environ.get("FAULTLINE_MODEL", DEFAULT_MODEL)
     token = M2MToken()
     client = MultiServerMCPClient({
         "faultline": {
@@ -110,12 +123,7 @@ async def investigate(alert: str) -> dict:
     })
     tools = await client.get_tools()
 
-    llm = ChatOpenAI(
-        model=MODEL,
-        api_key=_env("OPENROUTER_API_KEY"),
-        base_url="https://openrouter.ai/api/v1",
-        temperature=0,
-    )
+    llm = _build_llm(model)
     agent = create_agent(
         llm,
         tools,
@@ -157,7 +165,7 @@ async def investigate(alert: str) -> dict:
         "diagnosis": diagnosis.model_dump(),
         "tool_calls": tool_calls,
         "wall_seconds": round(wall, 1),
-        "model": MODEL,
+        "model": model,
         "degraded": degraded,
     }
 
@@ -184,7 +192,9 @@ async def _force_diagnosis(llm, messages, alert: str) -> Diagnosis:
         "uncertain, give your most likely root_cause_model and lower the confidence."
     )
     try:
-        structured = llm.with_structured_output(Diagnosis)
+        # function_calling (not the default json_schema) works across providers via
+        # OpenRouter — Claude in particular doesn't support the json_schema method.
+        structured = llm.with_structured_output(Diagnosis, method="function_calling")
         return await structured.ainvoke(
             [("system", SYSTEM_PROMPT.format(max_calls=MAX_TOOL_CALLS)),
              ("user", prompt)]
@@ -202,8 +212,10 @@ async def _force_diagnosis(llm, messages, alert: str) -> Diagnosis:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run one Faultline investigation")
     ap.add_argument("--alert", required=True, help="metric anomaly alert text")
+    ap.add_argument("--model", default=None,
+                    help="investigator model (default: $FAULTLINE_MODEL or minimax-m3)")
     args = ap.parse_args()
-    result = asyncio.run(investigate(args.alert))
+    result = asyncio.run(investigate(args.alert, model=args.model))
     print(json.dumps(result, indent=2))
 
 

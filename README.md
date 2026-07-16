@@ -71,8 +71,21 @@ Three faults — one fan-out join, one silent NULL, one unit change. `--trials 5
 **the model (minimax-m3) is not deterministic even at temperature 0** (MoE routing), so
 a single run is noisy — we report *rates*.
 
-<!-- EVAL_TABLE: filled from harness/results.json (5 trials/fault) -->
-_(table populated from the latest `harness/results.json` — 5 trials per fault)_
+5 trials/fault. Investigator: `minimax/minimax-m3`. Judge (mechanism + fix): `openai/gpt-4o-mini`.
+
+| Fault | Class | Root cause | Mechanism | Fix | Tool calls | Wall |
+|---|---|---|---|---|---|---|
+| `fanout_orders_shipments` | fan-out join | **5/5** | **5/5** | **5/5** | 16 | 99s |
+| `silent_null_payments` | silent NULL | 3/5 | **5/5** | 4/5 | 34 | 224s |
+| `unit_change_bank_transfer` | unit change | 3/5 | **5/5** | 4/5 | 30 | 269s |
+| **Total** | | **11/15** | **15/15** | **13/15** | | |
+
+Root cause is exact-match on the model name; mechanism and fix are LLM-judged. Where
+root cause < 5/5, the agent named a *defensible adjacent* model on the fault path
+(disclosed, not hidden):
+
+- `silent_null_payments` — expected `stg_payments`; agent named `stg_payments ×3, int_orders_joined ×2`
+- `unit_change_bank_transfer` — expected `stg_payments`; agent named `stg_payments ×3, int_orders_joined ×1, raw_payments ×1`
 
 **What's honest about this table:**
 

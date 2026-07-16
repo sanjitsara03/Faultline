@@ -1,10 +1,9 @@
 """Deterministic synthetic e-commerce seed data for the Faultline warehouse.
 
-DETERMINISM IS THE POINT: every random draw comes from ONE shared
-random.Random(42), and "now" is a fixed constant (never datetime.now()).
-Two runs produce byte-identical data, which is what makes "expected metric
-value" meaningful for the eval harness — the clean warehouse must be exactly
-reproducible so injected faults are the only source of deviation.
+Every random draw comes from ONE shared random.Random(42), and "now" is a
+fixed constant (never datetime.now()), so two runs produce byte-identical data:
+the clean warehouse must be exactly reproducible so injected faults are the only
+source of deviation.
 
 Schema contract: docs/FAULTLINE_SPEC.md — 5 tables in Postgres schema `raw`,
 data window 2026-04-01 .. 2026-07-10 inclusive, timestamps timezone-naive UTC.
@@ -120,8 +119,8 @@ DROP TABLE IF EXISTS raw.raw_payments CASCADE;
 DROP TABLE IF EXISTS raw.raw_shipments CASCADE;
 DROP TABLE IF EXISTS raw.raw_refunds CASCADE;
 
--- FK relationships are logical only: raw landing tables must not reject bad
--- rows, because injecting bad rows is the whole point of this project.
+-- FK relationships are logical only: raw landing tables must not reject the
+-- bad rows the fault injector writes.
 CREATE TABLE raw.raw_customers (
     customer_id text PRIMARY KEY,
     first_name  text,

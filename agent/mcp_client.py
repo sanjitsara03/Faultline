@@ -1,9 +1,9 @@
-"""MCP client plumbing for the Faultline investigator.
+"""MCP client for the Faultline investigator.
 
 Two jobs, nothing else:
 1. M2M token exchange (OAuth client-credentials) against MintMCP. Tokens are
    short-lived; we re-exchange near expiry. Every exchange is an audit event
-   on the gateway — that visibility is a feature, not overhead.
+   on the gateway.
 2. Open an authenticated MCP session to the agent's Virtual MCP endpoint.
 
 The LangGraph agent gets its tools through this session; nothing in this file
