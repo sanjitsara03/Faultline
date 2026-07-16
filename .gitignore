@@ -17,3 +17,6 @@ warehouse/dbt_project/.user.yml
 logs/
 
 docs/
+
+# personal Claude Code tooling (LangSmith MCP; key comes from .env at runtime)
+.mcp.json

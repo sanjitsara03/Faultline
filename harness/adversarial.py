@@ -118,7 +118,8 @@ async def _run_agent_capture(alert: str, naive: bool = False) -> dict:
     token = M2MToken()
     client = MultiServerMCPClient({"faultline": {
         "transport": "streamable_http", "url": _env("MINTMCP_MCP_URL"),
-        "headers": {"Authorization": f"Bearer {token.get()}"}}})
+        "headers": {"Authorization": f"Bearer {token.get()}"},
+        "timeout": 60}})  # gateway session-open can exceed the 30s SDK default
     tools = await client.get_tools()
     llm = ChatOpenAI(model=MODEL, api_key=_env("OPENROUTER_API_KEY"),
                      base_url="https://openrouter.ai/api/v1", temperature=0)

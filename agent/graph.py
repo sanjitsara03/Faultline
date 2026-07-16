@@ -136,6 +136,9 @@ async def investigate(alert: str, model: str | None = None) -> dict:
             "url": _env("MINTMCP_MCP_URL"),
             # Fresh token per investigation; M2MToken re-exchanges near expiry.
             "headers": {"Authorization": f"Bearer {token.get()}"},
+            # The gateway occasionally takes >30s (the SDK default) to open a
+            # session, which surfaced as trial-killing ReadTimeouts in evals.
+            "timeout": 60,
         }
     })
     tools = await client.get_tools()
@@ -212,10 +215,15 @@ async def _force_diagnosis(llm, messages, alert: str) -> Diagnosis:
         # function_calling (not the default json_schema) works across providers via
         # OpenRouter — Claude in particular doesn't support the json_schema method.
         structured = llm.with_structured_output(Diagnosis, method="function_calling")
-        return await structured.ainvoke(
+        result = await structured.ainvoke(
             [("system", SYSTEM_PROMPT.format(max_calls=MAX_TOOL_CALLS)),
              ("user", prompt)]
         )
+        # A model can emit no valid tool call, in which case ainvoke returns None
+        # (rather than raising); route that into the inconclusive fallback below.
+        if result is None:
+            raise ValueError("structured output returned no Diagnosis")
+        return result
     except Exception as e:
         return Diagnosis(
             root_cause_model="inconclusive",

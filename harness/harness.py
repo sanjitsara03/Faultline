@@ -74,14 +74,45 @@ def _reset_and_inject(fault_id: str) -> None:
     _inject("--fault", fault_id)
 
 
+def _infra_error(e: BaseException) -> bool:
+    """Transport-shaped failures (intermittent gateway 401 on a still-valid token,
+    session-open timeout, broken MCP stream). Worth one retry — the fault state is
+    untouched and the agent is read-only, so a retried trial is a fresh sample.
+    Model/agent failures are NOT retried; those are eval findings."""
+    parts: list[str] = []
+
+    def walk(x: BaseException) -> None:
+        parts.append(f"{type(x).__name__}: {x}")
+        for sub in getattr(x, "exceptions", None) or []:  # ExceptionGroup members
+            walk(sub)
+        if x.__cause__ is not None:
+            walk(x.__cause__)
+
+    walk(e)
+    blob = " | ".join(parts)
+    return any(m in blob for m in ("401", "timed out", "ReadTimeout",
+                                   "ConnectTimeout", "BrokenResourceError",
+                                   "TaskGroup"))
+
+
 async def _one_trial(spec: dict, alert_text: str, model: str | None) -> dict:
     """One investigation on an already-injected warehouse. The agent is read-only,
     so repeated trials on the same injected state don't contaminate each other —
     that's what lets us amortize one reseed over N trials."""
-    try:
-        result = await graph.investigate(alert_text, model=model)
-    except Exception as e:
-        return {"error": f"agent: {e}"}
+    result = None
+    for attempt in (1, 2):
+        try:
+            result = await graph.investigate(alert_text, model=model)
+            break
+        except Exception as e:
+            if attempt == 1 and _infra_error(e):
+                print(f"  transport error ({type(e).__name__}: {str(e)[:80]}); "
+                      "retrying trial once ...", flush=True)
+                await asyncio.sleep(5)
+                continue
+            # type name included because some errors stringify empty
+            # (e.g. BrokenResourceError)
+            return {"error": f"agent: {type(e).__name__}: {e}"}
     s = scoring.score(result["diagnosis"], spec["ground_truth"])
     return {
         "diagnosis": result["diagnosis"],
