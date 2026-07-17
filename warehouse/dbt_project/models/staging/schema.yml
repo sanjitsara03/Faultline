@@ -24,7 +24,6 @@ models:
           - not_null
 
   - name: stg_shipments
-    # Deliberately no unique test on order_id: the 1:1 shipment-per-order join assumption downstream is left untested.
     columns:
       - name: shipment_id
         tests:

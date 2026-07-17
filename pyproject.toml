@@ -1,7 +1,7 @@
 [project]
 name = "faultline"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI agent that diagnoses silent data-pipeline failures, eval-scored against known-fault ground truth"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

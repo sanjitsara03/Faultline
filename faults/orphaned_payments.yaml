@@ -1,0 +1,44 @@
+id: orphaned_payments
+category: referential_drift
+description: >
+  On 2026-06-28 a payment-processor migration starts emitting order references
+  with a new 'PX-' prefix on ~40% of successful payments. The payments still
+  exist and pass all tests, but they no longer match any order_id, so the
+  orders-payments join silently drops their revenue. The warehouse even has a
+  reconciliation model (int_payment_reconciliation) that flags the resulting
+  no-payment orders — but nothing consumes it.
+injection:
+  type: data_mutation
+  target: raw_payments
+  action: prefix_column
+  params:
+    key_column: payment_id
+    column: order_id
+    prefix: PX-
+    fraction: 0.4
+    filter: "status = 'success' and paid_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.total_revenue
+  expected_deviation: "TBD"
+  onset: "2026-06-28"
+ground_truth:
+  # RELABELED 2026-07-17: originally int_orders_joined. All three eval models
+  # independently converged on stg_payments, and they are right by our own
+  # attribution rubric: the join processes the values with standard SQL
+  # semantics, while stg_payments is the designated place to validate or
+  # normalize the source's order-reference format and forwards the
+  # out-of-contract values without the guard it owns. Disclosed in README.
+  root_cause_model: stg_payments
+  root_cause_mechanism: >
+    From the onset date a share of payments carry order references in a new
+    prefixed format that matches no order_id. stg_payments forwards them
+    without validating or normalizing the reference format it owns, so the
+    orders-payments join (correctly, by its own semantics) finds no match and
+    their revenue silently drops out of order_revenue and total_revenue; the
+    affected orders surface in int_payment_reconciliation as
+    no_successful_payment, but nothing checks it.
+  acceptable_fixes:
+    - normalize/map the new order reference format in stg_payments (strip the prefix) before it reaches the join
+    - add a relationships/anti-orphan check on stg_payments.order_id against orders so unmatched references can't pass silently
+    - alert on int_payment_reconciliation regressions (no_successful_payment spike)
+difficulty: hard

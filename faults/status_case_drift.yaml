@@ -1,0 +1,36 @@
+id: status_case_drift
+category: filter_regression
+description: >
+  On 2026-06-28 the payment provider's webhook v2 rollout starts sending the
+  status field in uppercase: ~35% of successful payments arrive as 'SUCCESS'
+  instead of 'success'. stg_payments filters with a case-sensitive
+  status = 'success', so those payments silently vanish from revenue.
+  No test covers status values, so everything stays green.
+injection:
+  type: data_mutation
+  target: raw_payments
+  action: set_column
+  params:
+    key_column: payment_id
+    column: status
+    value: SUCCESS
+    fraction: 0.35
+    filter: "status = 'success' and paid_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.net_revenue
+  # Measured on the live seed (deterministic): -32% to -37% on every post-onset
+  # day (1386 payments flipped); detector fires net_revenue -34%, peak_z=4.9,
+  # onset exact. total_revenue moves identically; orders_count untouched.
+  expected_deviation: "-32-37%"
+  onset: "2026-06-28"
+ground_truth:
+  root_cause_model: stg_payments
+  root_cause_mechanism: >
+    From the onset date a share of successful payments arrive with
+    status = 'SUCCESS' (uppercase); stg_payments' case-sensitive
+    where status = 'success' filter excludes them, so their amounts never
+    reach order_revenue and daily total_revenue drops.
+  acceptable_fixes:
+    - normalize case in the filter (where lower(status) = 'success') in stg_payments
+    - add an accepted_values test on stg_payments.status to catch new status variants
+difficulty: medium

@@ -1,0 +1,36 @@
+id: customer_id_nulls
+category: silent_null
+description: >
+  On 2026-06-28 a checkout-service deploy stops stamping customer_id on ~30%
+  of new orders (guest-checkout path regression). stg_orders forwards the
+  NULLs, count(distinct customer_id) silently skips them, and
+  active_customers in mart_customer_health drops while revenue metrics stay
+  healthy. No test covers customer_id on orders.
+injection:
+  type: data_mutation
+  target: raw_orders
+  action: null_column
+  params:
+    key_column: order_id
+    column: customer_id
+    fraction: 0.3
+    filter: "ordered_at >= '2026-06-28'"
+symptom:
+  metric: mart_customer_health.active_customers
+  # Measured on the live seed (deterministic): -28% to -30% on every post-onset
+  # day (1199 orders nulled); detector fires active_customers -28%, peak_z=8.3,
+  # onset exact. Revenue metrics show ZERO movement — the fault is only visible
+  # in the customer mart, exercising the detector catalog beyond revenue.
+  expected_deviation: "-28-30%"
+  onset: "2026-06-28"
+ground_truth:
+  root_cause_model: stg_orders
+  root_cause_mechanism: >
+    From the onset date a share of orders arrive with customer_id NULL;
+    stg_orders forwards them without a not-null guard on the foreign key, so
+    count(distinct customer_id) in mart_customer_health silently excludes
+    those orders and active_customers (and new_customers) undercounts.
+  acceptable_fixes:
+    - add a not_null guard/test on stg_orders.customer_id (or quarantine NULL-customer orders)
+    - coalesce NULL customer_id to a sentinel guest-customer key in stg_orders so counts stay honest
+difficulty: medium

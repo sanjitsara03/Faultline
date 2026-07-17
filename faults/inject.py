@@ -101,10 +101,29 @@ def multiply_column(cur, table: str, params: dict) -> int:
     return _update_selected(cur, table, params, f"{col} = {col} * {factor}")
 
 
+def _sql_literal(value: str) -> str:
+    """String literals come from YAML; keep them boring enough to inline safely."""
+    if not re.fullmatch(r"[A-Za-z0-9_ .:-]+", value or ""):
+        sys.exit(f"unsafe string value in fault spec: {value!r}")
+    return f"'{value}'"
+
+
+def set_column(cur, table: str, params: dict) -> int:
+    col = sql_ident(params["column"])
+    return _update_selected(cur, table, params, f"{col} = {_sql_literal(params['value'])}")
+
+
+def prefix_column(cur, table: str, params: dict) -> int:
+    col = sql_ident(params["column"])
+    return _update_selected(cur, table, params, f"{col} = {_sql_literal(params['prefix'])} || {col}")
+
+
 ACTIONS = {
     "duplicate_rows": duplicate_rows,
     "null_column": null_column,
     "multiply_column": multiply_column,
+    "set_column": set_column,
+    "prefix_column": prefix_column,
 }
 
 

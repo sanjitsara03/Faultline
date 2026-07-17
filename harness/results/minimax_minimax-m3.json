@@ -1,16 +1,16 @@
 [
   {
-    "fault": "fanout_orders_shipments",
+    "fault": "customer_id_nulls",
     "model": "minimax/minimax-m3",
     "judge_model": "openai/gpt-4o-mini",
-    "category": "fan_out_join",
+    "category": "silent_null",
     "difficulty": "medium",
-    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
-    "expected_root_cause": "int_orders_joined",
+    "alert": "active_customers in mart_customer_health is -28% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_orders",
     "n_trials": 5,
     "n_scored": 5,
     "root_cause_rate": [
-      4,
+      5,
       5
     ],
     "mechanism_rate": [
@@ -22,25 +22,201 @@
       5
     ],
     "root_cause_answers": {
-      "int_orders_joined": 4,
-      "stg_shipments": 1
+      "stg_orders": 5
     },
-    "avg_tool_calls": 14.8,
-    "avg_wall": 72.8,
+    "avg_tool_calls": 13.4,
+    "avg_wall": 60.3,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "Starting 2026-06-28, raw.raw_orders began delivering rows with NULL customer_id (103 of 346 orders that day, sustaining ~30% null rate through 2026-07-05). stg_orders is a 1:1 passthrough view over raw.raw_orders that casts ordered_at and loaded_at to timestamps but applies NO validation or guard on customer_id \u2014 it forwards the nulls untouched. int_orders_joined then left-joins the other tables on order_id (correctly), and mart_customer_health computes active_customers as count(distinct customer_id) over the joined output, which by SQL semantics excludes NULLs. Result: every null-customer order is silently dropped from the active_customers count, deflating the metric by ~28% (e.g. 2026-06-28: 242 active vs ~345 expected, 2026-07-04: 261 vs ~375).",
+          "evidence": [
+            "mart_customer_health on 2026-06-28: active_customers=242 vs prior-week range 275-386",
+            "int_orders_joined on 2026-06-28: 346 rows, 346 distinct order_ids, only 242 distinct customer_ids, 103 null customer_ids; pre-onset 06-20..06-27: 0 nulls per day",
+            "stg_orders and raw.raw_orders show identical 103 nulls on 2026-06-28, confirming the null originates upstream of stg_orders and is forwarded verbatim",
+            "Nulls span cancelled (5), placed (6), and delivered (92) statuses on 2026-06-28 \u2014 a customer_id data quality issue, not a status-specific issue",
+            "stg_orders raw_code is a pure passthrough: select order_id, customer_id, ordered_at::timestamp, status, currency, _loaded_at::timestamp from raw_orders \u2014 no WHERE, no IS NOT NULL guard on customer_id"
+          ],
+          "proposed_fix": "Add a customer_id not-null guard in stg_orders (e.g. `where customer_id is not null`) so the staging model enforces the source-field contract it owns. If the nulls are recoverable from a backfill, ingest the correct customer_id; otherwise dropping those rows at staging prevents the silent null-propagation that deflates active_customers and other distinct-customer metrics.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_orders",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the lack of validation on the customer_id field in stg_orders as the cause for the exclusion of NULL customer_id orders from the active_customers count.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of adding a not-null guard on customer_id aligns with the acceptable fix of enforcing a not_null guard/test on stg_orders.customer_id."
+        },
+        "tool_calls": 12,
+        "wall_seconds": 50.0,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "From 2026-06-28 onward, raw.raw_orders started ingesting rows with NULL customer_id (~80-110 per day). stg_orders is a pass-through view (`select order_id, customer_id, ... from raw_orders`) that performs no validation on the customer_id column, so it forwards these NULLs to int_orders_joined and mart_customer_health. The mart computes active_customers as count(distinct customer_id), which silently drops NULLs (SQL semantics: distinct excludes nulls), so ~28% of orders disappear from the active-customers count even though order counts are unchanged. The stg_orders model owns the guard (and has a not_null test on its own order_id, but no not_null test on customer_id), yet the SQL lacks the null filter that would either reject or normalize the bad rows.",
+          "evidence": [
+            "raw.raw_orders null customer_id by day: 0 nulls every day 2026-06-20..06-27, then 103 on 06-28, 85/79/84/92/96/114/110/85/81/85/87/98 on subsequent days. Total 1199 nulls in the 21-day window.",
+            "stg_orders and int_orders_joined preserve the same null counts (1199 null customer_id rows).",
+            "distinct customer_id per day in stg_orders drops from ~364 (06-27) to 242 (06-28) while order count stays flat (369 vs 346).",
+            "mart_customer_health.active_customers exactly matches the stg_orders distinct-customer count on every day.",
+            "Reconciled: mart.active_customers = int_orders_joined.distinct customer_id for the full window."
+          ],
+          "proposed_fix": "Add a `where customer_id is not null` filter (or a raise/alert on null) in stg_orders so that unjoinable order rows are excluded/flagged at the staging layer rather than silently dropped downstream. Add a not_null test on stg_orders.customer_id to catch this contract violation going forward.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_orders",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of validation on the customer_id column in stg_orders as the root cause for the exclusion of NULL customer_id orders from the active_customers count.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a not_null test on stg_orders.customer_id, which aligns with the acceptable fixes."
+        },
+        "tool_calls": 12,
+        "wall_seconds": 57.5,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "Beginning 2026-06-28, ~25-30% of rows in raw.raw_orders arrive with customer_id IS NULL (103/346 on 6/28, 85/283 on 6/29, 79/264 on 6/30, continuing through 7/10 \u2014 all statuses, all currencies). stg_orders is the designated staging/cleaning model for the orders feed; its SQL only casts ordered_at/loaded_at and forwards customer_id without a NOT NULL guard. The NULLs propagate through int_orders_joined (which left-joins on order_id) into mart_customer_health, where active_customers = count(distinct customer_id) per day. count(distinct) over a column that includes NULLs simply omits those rows from the count \u2014 there is no error, no test, no warning. The mart's SQL is correct given its inputs; the flaw is the missing contract guard in stg_orders, which is exactly the model that owns normalization of the raw orders feed. Result: active_customers drops ~28% (e.g., 6/27=364, 6/28=242, 6/29=196, 6/30=181) starting exactly on the alerted onset date.",
+          "evidence": [
+            "1) raw.raw_orders null customer_id by day: 0 from 2026-04-01 through 2026-06-27; then 103 (6/28), 85 (6/29), 79 (6/30), 84, 92, 96, 114, 110, 85, 81, 85, 87, 98 (7/1-7/10).",
+            "2) stg_orders reflects the same pattern (no filtering).",
+            "3) int_orders_joined grain check: no order_id duplication; rows == distinct order_id for every day in 6/20-7/10.",
+            "4) distinct customer_id per day in int_orders_joined collapses exactly at onset: 6/27=364 -> 6/28=242, 6/29=196, 6/30=181, while total rows stay in the 270-378 range (no row-count drop).",
+            "5) mart_customer_health active_customers trajectory matches int_orders_joined distinct customer_id day-for-day.",
+            "6) null-cid rows in raw_orders span every status (delivered 646, shipped 262, placed 201, cancelled 82, returned 8 from 6/28-7/10) and currency USD - i.e., a systemic source data quality regression, not a status-specific filter or join issue.",
+            "7) stg_orders raw_code declares no where/not_null guard on customer_id, so its transformation is mechanically correct but contract-incomplete."
+          ],
+          "proposed_fix": "In stg_orders, add a guard that filters out rows missing the business key, e.g. `where customer_id is not null` (and ideally surface these to a quarantine table or dbt test so the source regression is visible). Optionally also add a `not_null` test on `stg_orders.customer_id` so a future source regression fails the dbt run loudly instead of silently under-counting the mart. The smallest mechanical change is appending `where customer_id is not null` to stg_orders.",
+          "confidence": 0.92
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_orders",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of a NOT NULL guard in stg_orders as the root cause for the undercounting of active customers due to NULL customer_ids propagating through the data pipeline.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a guard to filter out rows with NULL customer_id, which aligns with the acceptable fix of adding a not_null guard."
+        },
+        "tool_calls": 16,
+        "wall_seconds": 77.6,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "Beginning 2026-06-28, source data in raw.raw_orders began arriving with customer_id = NULL for ~25-30% of orders per day (103/346 on 06-28, 114/378 on 07-04; 1,199 NULLs total in the dataset, all post-2026-06-27). stg_orders is the designated staging/cleaning model for orders \u2014 it owns the type contract on ordered_at (casts to timestamp) but does not validate or guard the non-null contract on customer_id, even though customer_id is the join key the entire customer-health lineage depends on. It passes the NULL customer_id values through untouched. In mart_customer_health, active_customers is computed as count(distinct customer_id); Postgres count(distinct) ignores NULLs, so the customers behind those NULL-keyed orders are silently dropped from the daily active count, producing a -28% drop starting 2026-06-28.",
+          "evidence": [
+            "raw.raw_orders: 0 null customer_id from 2026-04-01 to 2026-06-27, then 103 nulls on 2026-06-28 and ~25-30% nulls every day through 2026-07-10 (1,199 total NULLs in the dataset)",
+            "stg_orders and int_orders_joined mirror raw_orders exactly \u2014 103 null customer_id on 2026-06-28, 114 on 2026-07-04 \u2014 confirming the NULLs are not introduced or filtered downstream",
+            "mart_customer_health.active_customers: 364 on 2026-06-27, then 242 on 2026-06-28 (ratio 0.667 to trailing weekday avg), remaining at 0.66-0.83 through 2026-07-10 \u2014 exactly matching the NULL rate in stg_orders",
+            "NULLs are spread across all statuses (delivered 646, shipped 262, placed 201, cancelled 82, returned 8 post-06-27), so they are not isolated to cancelled/abandoned orders",
+            "stg_orders raw_code casts ordered_at to timestamp but does not check or filter customer_id, so it is the model that owns the customer_id non-null contract and failed to enforce it"
+          ],
+          "proposed_fix": "In stg_orders, add a guard on customer_id \u2014 either filter out rows where customer_id is null (where customer_id is not null) or, if those orders should still count, raise them to a dbt test/fail so the pipeline surfaces the upstream data quality regression instead of silently undercounting. The minimal change: add `where customer_id is not null` to stg_orders (and add a not_null test on stg_orders.customer_id) so the count(distinct customer_id) in mart_customer_health reflects only orders that can be attributed to a real customer, and any future regression is loud.",
+          "confidence": 0.94
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_orders",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the failure to handle NULL customer_id values in stg_orders as the cause for the undercounting of active customers.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a not_null test on customer_id, which aligns with the acceptable fixes."
+        },
+        "tool_calls": 12,
+        "wall_seconds": 45.2,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "stg_orders is the designated staging/cleaning model for raw_orders, but its SQL selects customer_id without any not-null or validity guard. Starting 2026-06-28, raw_orders began delivering orders with NULL customer_id (~80-114 per day, 29-31% of all orders). stg_orders passes these through unchanged. The downstream mart_customer_health computes active_customers as count(distinct customer_id), which silently excludes NULLs - so the metric deflates by ~28% even though order volume is unchanged. The mechanical break is the missing null guard in stg_orders, not in the source (which only delivered the values) and not in the mart (which correctly applies distinct counting to whatever it receives).",
+          "evidence": [
+            "mart_customer_health active_customers: 2026-06-27=364, 2026-06-28=242 (-33% on onset day), post-onset runs 181-261 vs trailing avg ~300+.",
+            "int_orders_joined distinct customer_id per day matches the mart exactly (242 on 2026-06-28), confirming the loss originates upstream of the mart.",
+            "stg_orders null_cust per day: 0 every day from 2026-04-01 through 2026-06-27; starting 2026-06-28 = 103, 85, 79, 84, 92, 96, 114, 110... (~29-31% of daily orders).",
+            "raw_orders has identical null_cust pattern (0 pre-onset, ~80-114/day post-onset), so the source change is the proximate trigger but stg_orders has the responsibility to validate.",
+            "orders_per_cust: stable at 1.01-1.03 pre-onset, jumps to 1.43-1.47 from 2026-06-28 onward - the same total orders now come from far fewer distinct customers because all NULL-id orders collapse out of the distinct count."
+          ],
+          "proposed_fix": "Add a NOT NULL guard in stg_orders: filter out rows with null customer_id (or fail the model with a dbt test) so that only valid customer-attributed orders propagate. For example, add `where customer_id is not null` to the stg_orders select. This will restore active_customers to the pre-onset level (since those NULL-id orders represent ~30% of volume with zero attributable customers and were never real 'active customers' anyway). Optionally also add a not_null test on stg_orders.customer_id to catch future regressions.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_orders",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of a not-null guard in stg_orders as the root cause for the undercounting of active_customers.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a NOT NULL guard to filter out rows with null customer_id, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 15,
+        "wall_seconds": 71.1,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      }
+    ]
+  },
+  {
+    "fault": "fanout_orders_shipments",
+    "model": "minimax/minimax-m3",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "fan_out_join",
+    "difficulty": "medium",
+    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
+    "expected_root_cause": "int_orders_joined",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      5,
+      5
+    ],
+    "mechanism_rate": [
+      5,
+      5
+    ],
+    "fix_rate": [
+      5,
+      5
+    ],
+    "root_cause_answers": {
+      "int_orders_joined": 5
+    },
+    "avg_tool_calls": 9.8,
+    "avg_wall": 56.7,
     "degraded_count": 0,
     "trials": [
       {
         "diagnosis": {
           "root_cause_model": "int_orders_joined",
-          "mechanism": "int_orders_joined left-joins stg_shipments directly without aggregating shipments to one row per order_id (unlike payments and refunds, which are pre-aggregated by order_id). Starting 2026-06-27, raw_shipments began carrying multiple shipment rows per order_id (e.g. order O029116 has 2 shipments), so the join fans out each order into multiple rows. mart_revenue_daily then uses count(*) over int_orders_joined, so orders_count is inflated by the duplicate shipment rows. The reconciliation breaks at int_orders_joined: its declared input stg_orders has 4,366 distinct orders on/after 2026-06-27, but int_orders_joined emits 5,384 rows for the same period \u2014 a delta of 1,018 that exactly matches the count of orders with >1 shipment row.",
+          "mechanism": "int_orders_joined LEFT JOINs stg_shipments to orders on order_id without pre-aggregating shipments, unlike the payments and refunds CTEs which are grouped by order_id before joining. Beginning 2026-06-27, stg_shipments acquired multiple rows per order_id (962 duplicate order_ids across the post-onset window; 1043 orders with >1 shipment). Each extra shipment row fans out the matching order row in the join, multiplying count(*) in mart_revenue_daily. Pre-onset shipment data was 1:1 with order_id, so the assumption held silently; once duplicates appeared, count(*)-based metrics in mart_revenue_daily were over-reported by ~21%, matching the alert (e.g., 6/26=364 to 6/27=454, then sustained 471/462 on 7/4-7/5).</mechanism>",
           "evidence": [
-            "mart_revenue_daily orders_count jumps from ~290-370/day pre-onset to 454 on 2026-06-27 and stays elevated (e.g. 471 on 2026-07-04).",
-            "stg_orders row count and distinct order_id match both before (27,478/27,478) and after (4,366/4,366) onset \u2014 orders input is clean.",
-            "int_orders_joined rows vs distinct order_id: before 27,503/27,478 (25 dup), after 5,384/4,366 (1,018 dup). The 1,018 dup rows after onset match exactly the count of orders with >1 row in stg_shipments (1,018).",
-            "stg_shipments grain check: before onset rows=distinct_orders=distinct_shipments (1:1:1); after onset rows=4,805 vs distinct_orders=3,762 \u2014 shipments now have multiple rows per order.",
-            "stg_payments and stg_refunds show no change in duplication pattern at onset; only shipments regressed."
+            "mart_revenue_daily.orders_count jumps at onset: 6/26=364, 6/27=454 (+25%), 7/4=471, 7/5=462, vs prior week range 276-393.",
+            "stg_shipments grain check (May 1 to Jul 10): pre-onset 15415 rows / 15415 distinct order_ids (0 duplicates), post-onset 4464 rows / 3502 distinct order_ids (962 extra). 1043 post-onset orders have more than 1 shipment.",
+            "int_orders_joined row fan-out (May 1 to Jul 10): pre-onset 18045 rows / 18020 distinct order_ids, post-onset 5046 rows / 4039 distinct order_ids (1007 extras) - the extra rows match shipment duplicates, confirming shipments is the join driving fan-out (payments and refunds CTEs are pre-aggregated).",
+            "int_orders_joined SQL joins the raw shipments view directly, while payments and refunds are both aggregated to order_id grain before joining - the shipments join is the only one that does not enforce grain."
           ],
-          "proposed_fix": "In int_orders_joined, aggregate stg_shipments to one row per order_id before joining (e.g. select order_id, min(shipment_id) as shipment_id, min(carrier) keep first, sum(shipping_cost) as shipping_cost, min(shipped_at) as shipped_at, min(delivered_at) as delivered_at from stg_shipments group by order_id), mirroring how payments and refunds are already aggregated. This restores the 1:1 grain with stg_orders and brings orders_count back in line.",
+          "proposed_fix": "In int_orders_joined, aggregate shipments to the order_id grain before the join, mirroring the payments and refunds CTEs. Replace the shipments CTE (currently `select * from stg_shipments`) with a group-by-order_id aggregation, e.g. one canonical row per order_id using min(shipment_id), max(carrier), and an appropriate handling of shipping_cost (sum, or keep on the chosen canonical row). Alternatively push the de-duplication into stg_shipments. Then re-run dbt to refresh mart_revenue_daily; orders_count should return to the ~330-400/day expected range.</parameter>\n</invoke>\n</function_results>",
           "confidence": 0.95
         },
         "score": {
@@ -49,26 +225,27 @@
           "root_cause_got": "int_orders_joined",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing an inflation in order counts due to the one-shipment-per-order assumption being violated.",
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing over-reporting of order revenue due to the join mechanism.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix aggregates shipments to one row per order_id before the join, which aligns with the first acceptable fix."
+          "fix_reason": "The agent's proposed fix aggregates shipments to the order_id grain before the join, which aligns with the acceptable fix of pre-aggregating shipments."
         },
-        "tool_calls": 16,
-        "wall_seconds": 70.9,
+        "tool_calls": 11,
+        "wall_seconds": 81.6,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
           "root_cause_model": "int_orders_joined",
-          "mechanism": "int_orders_joined left-joins stg_shipments to orders on order_id. Starting 2026-06-27, raw_shipments contains two duplicate shipment rows per order (distinct shipment_id, but identical shipped_at, carrier, and shipping_cost). The unfiltered left join fans out orders into 2 rows each, inflating the count(*) used by mart_revenue_daily.orders_count. The defect is in the model's SQL (which assumes one shipment row per order) mishandling duplicate input rows, not in the raw source itself.",
+          "mechanism": "int_orders_joined joins stg_shipments at shipment-grain onto orders at order-grain via `left join shipments on orders.order_id = shipments.order_id`, assuming one shipment per order. Beginning 2026-06-28, stg_shipments contains 2 shipment rows for ~30% of orders (shipment_count distribution: 2435 orders with 1 shipment, 1043 orders with 2 shipments in the post-onset window), so the join fans out by ~1.3x for those days. mart_revenue_daily then runs `count(*)` over this join, so each duplicated shipment adds a phantom order row, inflating orders_count by the same ~30% (\u2248+21% net vs the trailing same-weekday baseline). The defect lives in int_orders_joined's join logic, not in stg_shipments (which faithfully represents two real shipments) and not in mart_revenue_daily (which correctly aggregates what it's handed).",
           "evidence": [
-            "mart.orders_count for 2026-06-27 = 454; int_orders_joined rows = 454; int_orders_joined distinct order_id = 369; raw_orders count = 369. The 85-row delta equals exactly 85 orders that have 2 shipment rows on 2026-06-27.",
-            "Prior to 2026-06-27, int_orders_joined rows == distinct order_id (e.g. 06-25: 307==307, 06-20: 393==393). The duplicate-shipment pattern in raw_shipments appears with shipped_at >= 2026-06-28 (0 extra rows on 06-27, 91 extras on 06-28, ~70-90 extras daily thereafter), but shipments are joined to orders by order_id, so the duplicate shipment rows inflate order-day counts starting on each affected order's ordered_at date - which is 2026-06-27 for the first batch.",
-            "Sample duplicates: order O027481 has shipment_id S023593 and S027057 with identical shipped_at 2026-06-29 18:04:38, carrier USPS, shipping_cost 5.99; 85 such orders on 2026-06-27."
+            "stg_shipments rows_per_order is 1.0 for all ship_days 2026-06-20..2026-06-27 and jumps to 1.27\u20131.33 from 2026-06-28 onward",
+            "int_orders_joined fanout (rows - distinct order_ids) is 0 on 2026-06-20..2026-25, then 25/85/93/74/... from 2026-06-26 onward \u2014 rows are ~30% above distinct orders",
+            "Post-onset shipment-count distribution on stg_shipments: 2435 orders with 1 shipment, 1043 with 2 shipments \u2014 exactly the +30% fan-out",
+            "mart_revenue_daily.orders_count on 2026-07-04 is 471 and 2026-07-05 is 462, against an order-count baseline in the 300s pre-onset, matching the ~30% inflation (\u2248+21% net after weekday adjustment)"
           ],
-          "proposed_fix": "In int_orders_joined, deduplicate shipments to one row per order_id before the left join, e.g. `shipments as (select distinct on (order_id) * from stg_shipments order by order_id, shipment_id)`. This restores the assumed one-row-per-order grain and brings mart_revenue_daily.orders_count back to 369 on 2026-06-27.",
-          "confidence": 0.92
+          "proposed_fix": "In int_orders_joined, aggregate shipments to order-grain before joining \u2014 e.g. `shipments as (select order_id, min(shipment_id) as shipment_id, min(carrier) as carrier, sum(shipping_cost) as shipping_cost, min(shipped_at) as shipped_at, min(delivered_at) as delivered_at from stg_shipments group by order_id)` \u2014 so one row per order and the duplicate-shipment days no longer multiply orders_count/total_revenue.",
+          "confidence": 0.96
         },
         "score": {
           "root_cause_correct": true,
@@ -76,27 +253,84 @@
           "root_cause_got": "int_orders_joined",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated revenue counts due to a non-unique join key.",
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated revenue counts due to a non-unique join on order_id.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix deduplicates shipments to one row per order_id, aligning with the first acceptable fix."
+          "fix_reason": "The agent's proposed fix aggregates shipments to order grain before the join, which aligns with the acceptable fix of pre-aggregating shipments."
         },
-        "tool_calls": 23,
-        "wall_seconds": 108.7,
+        "tool_calls": 6,
+        "wall_seconds": 33.2,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
           "root_cause_model": "int_orders_joined",
-          "mechanism": "mart_revenue_daily's `orders_count = count(*)` is computed directly from int_orders_joined, which LEFT JOINs stg_shipments onto orders by order_id. Because a single order can have multiple shipment rows, the join fans out order rows 1-to-N. Beginning 2026-06-28 the upstream shipment pattern changed so that many orders now receive 2+ shipments (e.g. split shipments). On 2026-06-27 alone, 85 of 369 orders (23%) had multiple shipments shipped two days later, inflating int_orders_joined to 454 rows for that day. mart_revenue_daily inherits this inflated count verbatim. Pre-onset (\u22642026-06-25) every order had exactly one shipment, so distinct_orders == int_rows and the count was correct; from 2026-06-26 onward int_rows strictly exceeds distinct_orders, crossing the +21% alert threshold on 2026-06-27 and persisting. The raw data is correct \u2014 the model SQL is the defect, because it treats shipments as a 1:1 relationship with orders when aggregating order counts.",
+          "mechanism": "int_orders_joined aggregates payments and refunds by order_id before joining, but joins shipments at its raw row grain (one row per shipment, not one row per order). A left join of orders to a 1:N relationship on order_id multiplies order rows by the number of shipments. mart_revenue_daily then computes orders_count as count(*) over int_orders_joined, so it counts shipment rows instead of orders. Starting 2026-06-28, a subset of orders began shipping in multiple parcels (split shipments), so the fan-out inflated daily orders_count by ~21% (1043 extra shipment rows in the post-onset period vs 0 before). The defect is the missing aggregation in the shipments CTE; payments and refunds already use sum()/group by order_id, but shipments uses select * from {{ ref('stg_shipments') }} and is joined directly.",
           "evidence": [
-            "Reconciliation: mart_revenue_daily.orders_count matches int_orders_joined row count exactly on every checked day (e.g. 2026-06-27: mart=454, int_rows=454; 2026-06-28: 439=439; 2026-07-05: 462=462).",
-            "int_orders_joined row count diverges from distinct order count starting 2026-06-26 (364 vs 339, +25) and 2026-06-27 (454 vs 369, +85, +23%) \u2014 this is the +21% alert.",
-            "Raw order volume is stable and not the cause: raw_orders per day are 369, 346, 283... for 2026-06-27..29, well below the mart's 454, 439, 357.",
-            "Shipment multiplicity is the trigger: pre-2026-06-28 every order has exactly 1 shipment (shipments_per_order=1.000). From 2026-06-28 onward, ~1.3 shipments/order (e.g. 2026-06-28: 388 rows / 297 distinct = 1.31).",
-            "The fanout lands in earlier order dates too: 106 orders placed on 2026-06-27 received 2 shipments shipped 2026-06-28, and 50 orders placed on 2026-06-26 received 2 shipments shipped 2026-06-28 \u2014 these are what inflate the 6/26 and 6/27 order-day counts in the mart."
+            "mart_revenue_daily.orders_count jumps from 364 on 2026-06-26 to 454 on 2026-06-27 and stays elevated (~+21%) thereafter, matching the alert.",
+            "raw_shipments: before 2026-06-27, every order has exactly 1 shipment (shipment_rows == distinct_orders == 287..272 per day). From 2026-06-28 onward, shipment_rows exceed distinct_orders (e.g. 2026-06-28: 388 rows vs 297 orders; 2026-06-29: 392 vs 306).",
+            "In the post-onset window 2026-06-27..2026-07-10, raw_shipments has 4805 rows for 3762 distinct orders \u2014 1043 extra rows directly attributable to multi-shipment orders. Before onset, 7022 rows == 7022 orders (0 extra).",
+            "Top duplicated orders in raw_shipments show order_id appears up to 2+ times post-onset; no such duplicates existed pre-onset.",
+            "int_orders_joined SQL: payments CTE does SELECT order_id, sum(amount), count(*) GROUP BY order_id; refunds CTE does same; shipments CTE is `select * from {{ ref('stg_shipments') }}` (no aggregation). The left join on orders.order_id = shipments.order_id is therefore a 1:N join that fans order rows out by the number of shipments."
           ],
-          "proposed_fix": "In int_orders_joined, replace the direct LEFT JOIN of stg_shipments (which causes row fanout) with an aggregate that preserves one row per order, e.g. pre-aggregate shipments to (order_id, shipment_count, total_shipping_cost, last_shipped_at, last_delivered_at) and join that. This keeps one order_id per row so mart_revenue_daily's count(*) correctly equals the number of orders.",
+          "proposed_fix": "In int_orders_joined, change the shipments CTE to aggregate by order_id before joining \u2014 e.g. select order_id, count(*) as shipment_count, sum(shipping_cost) as shipping_cost, min(shipped_at) as shipped_at, max(delivered_at) as delivered_at, min(carrier) as carrier from {{ ref('stg_shipments') }} group by order_id \u2014 matching the grain of payments and refunds. This restores orders_count to one row per order.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated order counts due to a non-unique join on order_id.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix aggregates shipments to order grain before the join, which aligns with the acceptable fix of pre-aggregating shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 35.9,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "model.faultline.int_orders_joined",
+          "mechanism": "int_orders_joined joins stg_orders to stg_shipments with `LEFT JOIN shipments on orders.order_id = shipments.order_id`, implicitly assuming shipments is 1:1 with orders so the joined grain remains one row per order. Starting 2026-06-28, raw_shipments began containing exact-duplicate rows (two distinct shipment_ids per order_id, same shipped_at/delivered_at/carrier/cost) for 1,043 orders, and stg_shipments forwards them verbatim. The left join therefore fans those orders out to two rows each, and mart_revenue_daily's `count(*)` over int_orders_joined inflates by ~20-30% for the affected dates. (Shape (a): the join model's own SQL actively produces the wrong output given the data; stg_shipments is a passthrough that does not own uniqueness, so the join is the responsible hop.)",
+          "evidence": [
+            "stg_shipments weekly rows jump from ~1,890 to 2,452 in the week of 2026-06-29 while distinct order_ids stay flat (~1,900), with 1,043 orders having exactly 2 shipment rows and max 2 per order",
+            "raw_shipments confirms the source has perfect duplicate rows for affected order_ids (e.g. O027149 has shipment_ids S023322 and S027032 with identical shipped_at/delivered_at/carrier/shipping_cost), first appearing 2026-06-28",
+            "mart_revenue_daily orders_count vs same-dow trailing avg is +20% on 2026-06-27 and +22-30% on subsequent days, aligning with the join-fanout from 2026-06-28 shipments (one-day offset because shipments with shipped_at=06-28 join orders on ordered_at=06-27)",
+            "Recomputing mart_revenue_daily's count(*) from stg_orders after deduplicating shipments to 1-per-order returns to baseline (e.g. 2026-07-04: 378 vs mart 471; 2026-06-27: 369 vs mart 454)"
+          ],
+          "proposed_fix": "In int_orders_joined, change the shipments CTE to one row per order_id (e.g. `select distinct on (order_id) * from {{ ref('stg_shipments') }} order by order_id, shipped_at`) before the join. Equivalently, de-duplicate in stg_shipments with `select distinct on (order_id) * from raw_shipments order by order_id, shipped_at` and/or add a uniqueness test on order_id.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated revenue due to a non-unique join on order_id.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of deduplicating shipments to one row per order_id aligns with the first acceptable fix."
+        },
+        "tool_calls": 14,
+        "wall_seconds": 59.2,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "int_orders_joined declares its shipments CTE as `select * from stg_shipments` (no aggregation, raw grain) and LEFT JOINs it to orders on order_id. From 2026-06-26 onward, some orders legitimately have 2 shipment rows; because the join does not aggregate or otherwise enforce 1:1, each extra shipment row duplicates the entire order row in the view's output. The mart then does `count(*) from int_orders_joined` over the (ordered_at::date) groups, so it counts those shipment-duplicated order rows as additional orders, inflating orders_count by 7%\u201331% per day since 2026-06-26 (and the +21% on the 2026-06-27 onset day is the same fanout). Payments and refunds are still grain-1 per order and contribute no fanout.",
+          "evidence": [
+            "Reconciliation by date (2026-06-20 to 2026-07-05): mart.orders_count = stg_orders_rows + join_fanout_extra exactly on every post-onset day. Example 2026-06-27: stg_orders=369, int_orders_joined=454, mart=454, fanout=85. 2026-06-28: 346 \u2192 439 (+93).",
+            "Duplicated-shipment count by order date matches the fanout exactly: 2026-06-26 +25, 2026-06-27 +85, 2026-06-28 +93, 2026-06-29 +74 ... \u2014 same numbers as mart inflation vs source.",
+            "Pre-onset (\u2264 2026-06-25) stg_orders count == int_orders_joined count == mart.orders_count (e.g. 2026-06-25 all three = 307) \u2014 no fanout, no anomaly.",
+            "Payments grain: 5245 rows vs 5066 distinct order_ids (slight pre-existing dup, not at onset); Refunds grain: 187 rows = 187 distinct order_ids \u2014 neither changes at onset, so neither causes the 2026-06-27 jump.",
+            "stg_shipments first shows any order with 2+ shipments on 2026-06-28 (min shipment-date), and 1,043 orders in the data range have 2 shipments \u2014 i.e. the unsafe join assumption broke precisely at the alert's onset window."
+          ],
+          "proposed_fix": "In int_orders_joined, change the shipments CTE to aggregate to one row per order_id (e.g. min(shipped_at) as shipped_at, min(delivered_at) as delivered_at, sum(shipping_cost) as shipping_cost, min(carrier) as carrier, min(shipment_id) as shipment_id \u2014 or, more correctly, drop the shipment_id and only keep the aggregated fields the mart actually needs), grouped by order_id. This restores 1-row-per-order grain so the mart's count(*) reflects real orders.",
           "confidence": 0.97
         },
         "score": {
@@ -105,70 +339,541 @@
           "root_cause_got": "int_orders_joined",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of multiple shipments per order causing an inflated count of orders in the revenue calculations.",
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflation in order counts due to a lack of aggregation in the join.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix of pre-aggregating shipments to order grain aligns with the acceptable fix of pre-aggregating shipments before the join."
+          "fix_reason": "The agent's proposed fix aggregates shipments to one row per order_id, which aligns with the first acceptable fix."
         },
-        "tool_calls": 8,
-        "wall_seconds": 59.0,
+        "tool_calls": 12,
+        "wall_seconds": 73.4,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      }
+    ]
+  },
+  {
+    "fault": "negative_payment_amounts",
+    "model": "minimax/minimax-m3",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "sign_corruption",
+    "difficulty": "medium",
+    "alert": "aov in mart_revenue_daily is -33% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      5,
+      5
+    ],
+    "mechanism_rate": [
+      5,
+      5
+    ],
+    "fix_rate": [
+      5,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_payments": 5
+    },
+    "avg_tool_calls": 13.4,
+    "avg_wall": 66.8,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw.raw_payments began emitting \"success\"-status rows with negative `amount` values (e.g., 52 of 355 success rows on 6/28 totaled -$4,324.65; min amounts dropped from ~$1.90 positive to as low as -$371.98). stg_payments is the designated cleaning model for raw payments \u2014 it filters to status='success' and casts amount to numeric(10,2), but it owns no range/positivity guard. The negatives therefore pass through unchanged, get aggregated per order_id in stg_payments' `order_revenue` (via the inner sum in stg_payments's own aggregation isn't there \u2014 int_orders_joined sums them) and propagated into int_orders_joined, where the LEFT JOIN multiplies the damage by combining negative amounts with the same order. The mart's AOV = sum(order_revenue)/count(*) thus drops by the same proportion: ~30% lower revenue on similar order counts, producing the -33% AOV alert.",
+          "evidence": [
+            "Pre-onset (6/20-6/27): zero negative-amount success payments; avg success payment ~$77-95; mart AOV $79-93",
+            "Onset (6/28): 52 of 355 success payments have negative amount, totaling -$4,324.65; sum(success amount) drops from $28,829 (6/27) to $20,798 (6/28), a 28% drop, while order_count drops only 6% (369->346)",
+            "Post-onset (6/28-7/10): 40-57 negative success rows per day, -$3,000 to -$4,900 daily, sum of positive-only amounts ($19k-$27k) reconciles to pre-onset baseline but is masked by negatives",
+            "Negative amounts affect all four payment methods (card, paypal, gift_card, bank_transfer) uniformly \u2014 source-wide issue, not a single broken method",
+            "The drop is present identically in raw.raw_payments (6/27 success sum $28,829 -> 6/28 success sum $20,798), in analytics.stg_payments (which faithfully applies the cast with no range check), and in the mart \u2014 so stg_payments' SQL is the missed guard, not a downstream aggregation error"
+          ],
+          "proposed_fix": "Add a range/positivity guard in stg_payments, e.g. `where status = 'success' and amount >= 0` (and ideally surface/quarantine the negative-amount rows instead of silently dropping them). The minimal change to restore the metric is filtering out non-positive amounts in stg_payments so that order_revenue reflects only valid successful payments.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of negative payment amounts being processed without a validity guard, leading to a decrease in order revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a positivity guard on stg_payments for successful payments, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 15,
+        "wall_seconds": 68.0,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
-          "root_cause_model": "stg_shipments",
-          "mechanism": "Starting 2026-06-27, raw.raw_shipments began containing duplicate rows per order_id (same order_id, carrier, shipped_at, shipping_cost, but distinct shipment_id). The stg_shipments model is a transparent passthrough that does not deduplicate, so it passes these duplicates to int_orders_joined. int_orders_joined LEFT JOINs stg_shipments on order_id with no uniqueness guard, so each duplicate shipment row fans the order out into multiple joined rows. mart_revenue_daily then counts rows (count(*)) on this inflated joined output, so orders_count is inflated by ~21% on every day after 2026-06-27 (e.g. 2026-06-27: 454 vs ~370 expected; 2026-07-04: 471 vs ~390 expected). Quantitatively: shipments_per_order jumped from 1.000 (pre-onset) to 1.263 (post-onset) \u2014 exactly matching the orders_count inflation.",
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering rows with negative `amount` values (594 rows totaling -$51,041.34 between 2026-06-28 and 2026-07-10; none before that date). stg_payments only filters on `status = 'success'` and casts the type \u2014 it does not validate that amount is non-negative, so it forwards these out-of-contract negative values as-is. int_orders_joined then sums them into order_revenue (a correct SUM that faithfully includes the negatives), reducing order_revenue for affected orders. mart_revenue_daily sums that reduced revenue over the order count, so AOV (sum(order_revenue)/count(*)) drops by the share of the reduction: -$51K over 3,997 orders \u2248 -$12.77 per order, taking AOV from ~$85 to ~$57 (-33%), exactly matching the alert.",
           "evidence": [
-            "stg_shipments shipments_per_order: 1.000 before onset, 1.263 after onset",
-            "raw_shipments after onset: 3124 rows vs 2474 distinct order_ids (650 orders have 2 shipment rows, 1824 have 1)",
-            "Pre-onset 2026-06-20..06-26: zero orders with >1 shipment row in raw_shipments",
-            "int_orders_joined rows_per_order: 1.011 before, 1.254 after \u2014 same fanout as shipments",
-            "Per-day reconciliation: int_orders_joined row count = mart_revenue_daily orders_count exactly (diff=0) on all 16 days, so the break is upstream of the mart and fully explained at int_orders_joined/stg_shipments",
-            "Mart post-onset orders_count runs ~+21% vs trailing weekday average (e.g. 2026-06-27=454, 2026-07-04=471) consistent with the 1.26x fanout"
+            "mart_revenue_daily AOV: before-onset 88-day avg $85.22; on/after 2026-06-28 daily AOV falls to $47\u2013$70, with 13-day period avg $56.39 (-33.8%).",
+            "int_orders_joined revenue_per_order: before $85.22, after $56.39 \u2014 same drop, so the fault is upstream of the mart.",
+            "stg_payments profile: before period min(amount)=$0.88, avg=$84.40; after period min=-$371.98, avg=$56.98, with 594 negative rows summing to -$51,041.34.",
+            "raw_payments confirms the negatives originate in the source: 594 negative-amount rows, all dated 2026-06-28 or later (first appears 2026-06-28 00:09:21), none before.",
+            "Grain check: int_orders_joined rows = distinct order_id in both periods, so no join fanout is inflating the denominator.",
+            "stg_payments SQL contains only a status filter and a type cast; it owns no null/range guard on amount, which is the missing validation."
           ],
-          "proposed_fix": "Deduplicate in stg_shipments on the logical shipment key (order_id, carrier, shipped_at) \u2014 e.g. select distinct or row_number() over (partition by order_id, carrier, shipped_at order by shipment_id) = 1 \u2014 so the staging layer preserves the assumption that an order has at most one shipment row, and int_orders_joined's left join does not fan out.",
-          "confidence": 0.9
+          "proposed_fix": "Add an amount-non-negative guard in stg_payments, e.g. `and amount >= 0` (and ideally raise the issue with the upstream payment provider / data loader to stop emitting negative 'success' payments). Optionally quarantine / flag these rows if they represent a distinct business event.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of negative payment amounts being processed without validation, leading to a reduction in order revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a positivity guard on stg_payments.amount, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 12,
+        "wall_seconds": 50.0,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting the week of 2026-06-22 (fully visible from 2026-06-28 onward), raw_payments began delivering rows with status='success' AND negative `amount` (refund-shaped records mis-classified as successful payments). stg_payments is the designated cleaning/validation layer for payments \u2014 it already enforces a `status='success'` filter \u2014 but it owns no guard on the amount contract (a successful payment should have amount > 0). The negative amounts therefore flow through stg_payments, get summed into order_revenue in int_orders_joined, and pull both total_revenue and the per-order-revenue distribution down. The mart's aov = sum(order_revenue) / count(orders) is mechanically correct, but its input is corrupted: per-day total_revenue drops from ~27K to ~14-20K and the bottom decile of order_revenue falls to -100..-140, dragging the daily mean from ~85 to ~53-70, a ~33% drop exactly matching the alert.",
+          "evidence": [
+            "raw_payments: 0 negative-amount rows through wk 2026-06-15; 52 (-$4,325) in wk 2026-06-22; 336 (-$28,005) in wk 2026-06-29; 206 (-$18,712) in wk 2026-07-06 \u2014 all with status='success'.",
+            "stg_payments passes these through unchanged: same negative counts and sums by week, confirming stg_payments applies no amount guard.",
+            "mart_revenue_daily aov: pre-onset 6/20-6/27 ranges 79.13-92.95 (mean ~86); post-onset 6/28-7/5 ranges 53.47-69.64 (mean ~59), a ~32% drop, while orders_count per day is unchanged (264-378, same range as before).",
+            "int_orders_joined order_revenue decile-1 avg shifts from +10-12 pre-onset to -100..-143 post-onset \u2014 the negative payments are summing into order_revenue at the order level.",
+            "Recomputing the mart from current stg_payments reproduces the bad aov exactly, confirming the defect originates upstream of int_orders_joined."
+          ],
+          "proposed_fix": "In stg_payments, add an amount-validity guard alongside the existing status filter, e.g. add `and amount >= 0` (or `and amount > 0`) to the WHERE clause. This is the smallest change that restores the contract that a 'successful payment' row carries positive revenue.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of negative amounts in successful payments affecting revenue calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix adds a positivity guard on stg_payments.amount, aligning with the first acceptable fix."
+        },
+        "tool_calls": 12,
+        "wall_seconds": 54.2,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "stg_payments enforces the status contract (filters to status='success') but does not enforce the non-negative amount contract. Starting 2026-06-28, raw_payments began delivering negative-amount rows (e.g., P029859 amount=-24.99, status=success) \u2014 chargebacks/refunds mislabeled as successful payments. stg_payments faithfully passes these negative values through (its own cast/sum SQL runs exactly as written, but it is the designated cleaning layer for raw_payments and owns the normalization of the payment-amount field). int_orders_joined then sums them into order_revenue alongside the positive payments for the same order, materially reducing the per-order revenue. mart_revenue_daily divides that reduced total_revenue by orders_count, producing the ~-33% AOV drop.",
+          "evidence": [
+            "mart_revenue_daily: AOV ~$80-90/day through 2026-06-27, drops to $47-69 from 2026-06-28 onward (e.g., 2026-06-28: $59.16; 2026-07-06: $47.62) \u2014 exact onset matching the alert.",
+            "int_orders_joined before vs after: row count 2619 vs 2545 (similar order volume), but sum(order_revenue) 224,566.92 vs 150,807.92 (-33%) and avg 87.58 vs 60.30, which exactly accounts for the AOV shift.",
+            "stg_payments amount distribution by paid_at date: 0 negative-amount rows for any day 2026-06-15..2026-06-27; starting 2026-06-28, 39-57 negative-amount rows per day, summing to -$3.0k to -$4.9k/day, across all four payment_methods (card, paypal, gift_card, bank_transfer).",
+            "Sample raw rows confirm: raw.raw_payments row P029859 order_id O027953 amount=-24.99 status=success paid_at 2026-06-28; stg_payments' `where status='success'` filter keeps it, and the negative value reduces order_revenue in int_orders_joined for that order.",
+            "Reconciliation: mart_revenue_daily's total_revenue for any post-2026-06-27 day equals sum(stg_payments.amount) including negatives. Excluding the negative-amount rows restores the pre-2026-06-28 AOV level."
+          ],
+          "proposed_fix": "Add a non-negative amount guard to stg_payments: change its WHERE clause from `where status = 'success'` to `where status = 'success' and amount >= 0`. This is the single smallest change that corrects the metric \u2014 it drops the out-of-contract negative-amount rows at the cleaning layer that already owns the success-status contract, and downstream int_orders_joined and mart_revenue_daily will then aggregate only legitimate revenue.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the failure to enforce a non-negative amount contract in stg_payments as the root cause of revenue loss.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix adds a positivity guard on stg_payments.amount for successful payments, aligning with the first acceptable fix."
+        },
+        "tool_calls": 19,
+        "wall_seconds": 108.7,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering rows with status='success' but negative amount (594 such rows totaling -$51,041 through 2026-07-10; ~40-57/day beginning 2026-06-28 with $5-8 \"small\" values and tails down to -$371.98). stg_payments filters on status='success' but performs no range/positivity check on amount, so it forwards these negative values verbatim. int_orders_joined sums them into order_revenue, and mart_revenue_daily sums them into total_revenue, dragging aov = total_revenue/orders_count from ~$80-90 to ~$53-70. This is a missing-guard defect in the staging model that is the designated place to validate payment amounts.",
+          "evidence": [
+            "Alert onset 2026-06-28 matches the first appearance of any negative-amount 'success' payment: 52 negatives on 2026-06-28 totaling -$4,324.65, none on any prior day.",
+            "Pre vs post payment distribution: pre min=$0.96, p10=$14.99, p50=$64.50; post min=-$314.95, p10=-$44.49, p50=$49.97, 331 sub-$1 'success' payments in the post period vs 2 pre.",
+            "stg_payments faithfully passes negatives: 594 negative rows totaling -$51,041 in stg_payments, matching raw.",
+            "mart_revenue_daily aov (recomputed) drops from ~$80-93 pre-onset to ~$53-70 post-onset; orders_count and customer counts are stable across onset, so the numerator (revenue) is the broken side, not the denominator.",
+            "int_orders_joined has no row fan-out (rows == distinct order_ids on every checked day), so the defect is not a join cardinality bug \u2014 it is the value of order_revenue itself."
+          ],
+          "proposed_fix": "In stg_payments, guard against out-of-contract negative amounts for status='success'. Either filter them (e.g., `where status = 'success' and amount >= 0`) or, if these represent legitimate chargebacks recorded as 'success' by mistake, route them to stg_refunds. The minimal change is adding `and amount >= 0` to the WHERE clause so the staging model enforces the contract its downstream consumers assume.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of a positivity check on payment amounts in the stg_payments model as the root cause of negative amounts affecting revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix adds a positivity guard on stg_payments.amount for successful payments, aligning with the first acceptable fix."
+        },
+        "tool_calls": 9,
+        "wall_seconds": 53.1,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      }
+    ]
+  },
+  {
+    "fault": "orphaned_payments",
+    "model": "minimax/minimax-m3",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "referential_drift",
+    "difficulty": "hard",
+    "alert": "net_revenue in mart_revenue_daily is -38% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      2,
+      5
+    ],
+    "mechanism_rate": [
+      3,
+      5
+    ],
+    "fix_rate": [
+      2,
+      5
+    ],
+    "root_cause_answers": {
+      "inconclusive": 1,
+      "stg_payments": 2,
+      "mart_revenue_daily": 1,
+      "int_orders_joined": 1
+    },
+    "avg_tool_calls": 37.0,
+    "avg_wall": 156.5,
+    "degraded_count": 1,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "inconclusive",
+          "mechanism": "Investigation did not converge within budget; forced summary failed (structured output returned no Diagnosis).",
+          "evidence": [],
+          "proposed_fix": "Re-run with a larger tool-call budget.",
+          "confidence": 0.0
         },
         "score": {
           "root_cause_correct": false,
-          "root_cause_expected": "int_orders_joined",
-          "root_cause_got": "stg_shipments",
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "inconclusive",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation does not identify the specific issue of unvalidated payment references leading to revenue loss, which is central to the ground truth.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the underlying issue of mismatched order references or validation checks."
+        },
+        "tool_calls": 58,
+        "wall_seconds": 203.7,
+        "degraded": true,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began arriving with order_id values prefixed by \"PX-\" (e.g., \"PX-O027889\") instead of bare order_ids (\"O027889\"). stg_payments performs a 1:1 passthrough with no normalization, so the prefixed values flow into int_orders_joined. That model joins orders to payments on exact string equality of order_id, so every PX-prefixed payment row fails to match its order; the LEFT JOIN leaves order_revenue NULL, and mart_revenue_daily's `sum(coalesce(order_revenue,0))` zeros those orders out, while `count(*)` still counts them \u2014 driving the -38% net_revenue drop and a collapsing aov. stg_payments is the designated staging/cleaning model for payments (it already filters status='success' and casts amount) and owns the normalization of the source order_id key; the missing guard there is the defect.",
+          "evidence": [
+            "Per-day payment\u2192order match rate collapses on 2026-06-28: 6/27 = 359/369 (97%) orders paid same-day, 6/28 = 206/346 (60%); from 6/28 onward, 100\u2013155 orders/day have no payment at all in stg_payments.",
+            "mart_revenue_daily net_revenue drops from ~$28k/day (6/20\u20136/27) to ~$15k/day (6/28+) and aov falls from ~$85 to ~$50; orders_count is unchanged, isolating the drop to revenue per order.",
+            "1032 payment rows from 2026-06-28..07-05 carry order_id with a 'PX-' prefix; all 1032 map 1:1 to real orders in stg_orders when the prefix is stripped.",
+            "Pre-onset (6/20\u20136/27), 0 PX-prefixed payments; onset (6/28) introduces 141, then 105\u2013151/day \u2014 fully consistent with the on-time revenue deficit of ~$86,082 over 8 days.",
+            "int_orders_joined has exactly 1 row per order (no fan-out); the join is correct under its SQL semantics \u2014 the upstream stg_payments is the hop that should have normalized the key."
+          ],
+          "proposed_fix": "In stg_payments, normalize order_id by stripping a leading 'PX-' prefix (e.g., select regexp_replace(order_id, '^PX-', '') as order_id, ...), or coalesce the join key in int_orders_joined. The minimal change is a one-line normalization in stg_payments so downstream joins see the bare order_id and the ~$86k of misattributed revenue reattaches.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of duplicate shipment rows causing inflation in order revenue due to a lack of deduplication in the join process.",
+          "mechanism_reason": "Both explanations identify the failure to normalize the order_id format in stg_payments as the root cause for the revenue drop.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix deduplicates shipments to one row per order_id, aligning with the first acceptable fix."
+          "fix_reason": "The agent's proposed fix of normalizing the order_id by stripping the 'PX-' prefix in stg_payments aligns with the first acceptable fix."
         },
-        "tool_calls": 12,
-        "wall_seconds": 49.8,
+        "tool_calls": 26,
+        "wall_seconds": 115.6,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "mart_revenue_daily",
+          "mechanism": "mart_revenue_daily's SQL computes net_revenue as sum(coalesce(order_revenue, 0)) - sum(coalesce(refund_amount, 0)) over the rows produced by int_orders_joined, which is a LEFT JOIN of orders to payments. This implicitly assumes that every order has a matching successful payment (the join populates order_revenue for every row). When the source data shifts and a large fraction of orders lack a successful payment, those orders are still counted in orders_count but contribute $0 to total_revenue, silently dragging net_revenue down. Starting 2026-06-28, the share of orders without a successful payment in raw_payments jumps from ~2% (7-11 per day) to ~35-50% (100-165 per day), causing net_revenue to appear ~38% below its trailing weekday average. The mart's own transformation is unsafe given the new data distribution: it should either INNER JOIN to payments for revenue metrics or filter to orders with non-null order_revenue.",
+          "evidence": [
+            "Pre-onset (2026-06-20..2026-06-27): int_orders_joined shows 5-11 orders/day with NULL order_revenue (~2% of orders); post-onset (2026-06-28..2026-07-10): 99-164 orders/day with NULL order_revenue (~30-50%).",
+            "raw.raw_payments shows 355 successful payments on 2026-06-28 totaling $29,447.91, but int_orders_joined only attributes $17,354.90 of revenue to orders placed that day because 139 of 346 orders have no matching successful payment.",
+            "Order status of no-payment orders shifted dramatically: pre-onset only 2 'delivered' orders lacked payments, post-onset 838 'delivered', 349 'shipped', 344 'placed' orders lack successful payments \u2014 the population of unpaid orders is the change.",
+            "raw.raw_orders and analytics.stg_payments are both clean (stg_payments correctly filters status='success' with 0 nulls in amount); the data defect is that many orders simply have no payment record in raw_payments at all.",
+            "mart_revenue_daily output reconciles perfectly with int_orders_joined: sum(order_revenue) without coalesce equals sum(coalesce(order_revenue,0)) because SUM ignores NULLs \u2014 the mart's own join-grain assumption is what produces the metric defect."
+          ],
+          "proposed_fix": "In mart_revenue_daily, restrict the aggregation to orders with a successful payment (e.g., add a WHERE filter on int_orders_joined excluding rows where order_revenue IS NULL, or change the upstream join to INNER JOIN on payments for revenue metrics). Alternatively, change net_revenue to use order_revenue directly (which already excludes NULLs) and ensure orders_count reflects only paid orders.",
+          "confidence": 0.82
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "mart_revenue_daily",
+          "mechanism_correct": true,
+          "mechanism_score": 0.9,
+          "mechanism_reason": "Both explanations identify the issue of orders lacking successful payments leading to revenue discrepancies, though the agent's explanation focuses on the SQL computation aspect.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of the order reference format or the anti-orphan check, which are key components of the acceptable fixes."
+        },
+        "tool_calls": 26,
+        "wall_seconds": 129.9,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
           "root_cause_model": "int_orders_joined",
-          "mechanism": "int_orders_joined LEFT JOINs stg_shipments on order_id without de-duplicating to order grain. Starting 2026-06-26, stg_shipments contains 2+ shipment rows per order_id (cloned shipments with distinct shipment_id but identical timestamps, carrier, cost). Each shipment row produces a duplicate order row in the join. mart_revenue_daily then does count(*) over the join, so orders_count is inflated by the shipment fan-out factor (~+21% on weekdays, matching the alert). The shipment dupes appear to be a source-side double-load in raw_shipments, but int_orders_joined is the first hop that turns the multi-row-per-order input into per-shipment duplicated order rows, so it is the responsible model.",
+          "mechanism": "int_orders_joined left-joins stg_orders to stg_payments (pre-aggregated to order_id) and stg_refunds, then coalesces missing order_revenue/refund_amount to 0. This makes the model silently treat 'no matching successful-payment row' as 'order with zero revenue'. Starting 2026-06-28, ~36% of new orders in raw_orders (e.g. 126 of 346 on 6/28) have no successful payment row in raw_payments at all (delivered orders with no payment and no refund). int_orders_joined produces rows with order_revenue=NULL (coalesced to 0); mart_revenue_daily aggregates these as 0 revenue while still counting them in orders_count, so net_revenue drops ~38% on the order date even though underlying business activity is intact. Refunds on/after 7/4 also fall to exactly $0 in the mart because post-6/28 raw_refunds reference order_ids whose ordered_at is in early-to-mid June (e.g. all 16 refunds on 6/28 are for orders placed 6/9-6/20); the mart attributes refunds to ordered_at::date, so they never reach a current day.",
           "evidence": [
-            "mart_revenue_daily.orders_count jumps from ~370 (6/20-6/26 weekdays) to 454 on 6/27, matching the alert onset.",
-            "Reconciliation: pre-onset, int_orders_joined row count equals stg_orders row count (e.g. 6/25: both 307); post-onset, int_orders_joined rows exceed stg_orders rows by exactly the multi-shipment count (6/27: 369 distinct orders vs 454 int rows; 6/28: 346 vs 439; 6/30: 264 vs 331).",
-            "Stg_shipments itself contains duplicates: 6/28 has 388 shipment rows for only 297 distinct order_ids; sample order O027710 has two shipment_ids (S023795, S027109) with identical shipped_at, delivered_at, carrier, and shipping_cost \u2014 exact clones.",
-            "mart_revenue_daily.orders_count equals the inflated int_orders_joined row count, not the true distinct-order count."
+            "Pre-onset 2026-06-27: stg_orders has 369 distinct orders, 362 match a success payment in stg_payments; int_orders_joined sum(order_revenue)=$29,079.29; mart_revenue_daily total_revenue=$29,079.29 \u2014 reconciles.",
+            "Post-onset 2026-06-28: stg_orders has 346 distinct orders but only 212 join to a success payment in stg_payments; 19 have 'failed' payments, 6 'pending', and 126 have NO payment row at all in raw_payments. int_orders_joined and mart both produce $17,354.90 (a ~$11k gap vs. pre-onset run-rate of ~$28-30k).",
+            "Per-day unmatched order counts: 6/27=2, 6/28=126, 6/29=99, 6/30=98, 7/1=98, 7/2=115, 7/3=117, 7/4=134, 7/5=135, 7/6=101, 7/7=92, 7/8=100. These are real delivered orders (status='delivered' for 100+ of 126 on 6/28) with normal 7-char order_ids and existing customer_ids (only 7/126 are new customers on 6/28).",
+            "Refunds in mart collapse to $0 by 2026-07-04 while raw_refunds on those days still have 10-16 rows/day; the raw_refunds order_ids on 6/28 all have ordered_at in 6/9-6/20 (verified: 16 rows from 10 distinct order dates 6/9-6/20), so attributing to ordered_at::date hides them.",
+            "Failed/pending payment counts are stable across the period (~10-15 failed/day, ~5-10 pending/day) \u2014 the collapse is in success row count, not a status shift, ruling out a stg_payments status filter regression.",
+            "int_orders_joined itself reconciles to its inputs in both windows \u2014 its output is mechanically correct, but its LEFT JOIN + coalesce transformation is the unsafe assumption: 'missing payment row == zero revenue for that order' is violated when ~36% of orders are missing payment rows."
           ],
-          "proposed_fix": "In int_orders_joined, aggregate shipments to order_id grain (one row per order_id with min(shipped_at), max(delivered_at), first carrier, sum(shipping_cost)) before the LEFT JOIN, so a multi-shipment order contributes exactly one row. Equivalently, switch the join to a lateral subquery that picks one shipment per order. Either change makes mart_revenue_daily.orders_count match the true order grain.",
-          "confidence": 0.95
+          "proposed_fix": "Attribute revenue and refunds to the event date (paid_at for payments, refunded_at for refunds) rather than ordered_at. Smallest change: in mart_revenue_daily, drive the grain from stg_payments.paid_at and stg_refunds.refunded_at (a daily sum of successful-payment amounts and refund amounts) instead of grouping int_orders_joined by ordered_at::date, so missing payments on the order day no longer zero out revenue and refunds for older orders surface on the day they actually occur. Optionally also harden stg_payments with a guard/test asserting every delivered order has a successful payment (or that payment-row count tracks order volume).",
+          "confidence": 0.62
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.4,
+          "mechanism_reason": "The agent's explanation focuses on the left-join behavior and coalescing of missing values, while the ground truth emphasizes the lack of validation and normalization of payment references leading to unmatched orders.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on attributing revenue and refunds to event dates rather than addressing the core issue of normalizing order references or ensuring unmatched references are flagged."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 177.4,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, the upstream payments source (raw.raw_payments) stopped emitting payment records for ~787 orders in raw.raw_orders (656 of them status='delivered', 21 status='shipped', 45 'placed', 19 'returned', 46 'cancelled' \u2014 orders that all have shipments but no payment of any status). The stg_payments model is the designated staging/cleaning model for the payments stream (per its description: 'Successful payments only (failed/pending filtered out)'). Its SQL is a thin pass-through: `select ... where status = 'success'`. It owns the normalization/validation of the payments feed but has NO guard \u2014 no null/range/existence check, no orphan-order detection, no freshness check \u2014 so it silently forwards an empty result set for those orders, and the LEFT JOIN in int_orders_joined then turns into NULL order_revenue for them. The mart correctly coalesces NULL to 0, so those orders contribute $0 instead of their ~$85 to net_revenue, dropping AOV from ~$85 to ~$50 and net_revenue by ~38%. This is shape (b): every model on the path is mechanically correct (coalesce, left-join, filter are all doing what their SQL says), but the staging/cleaning model that owns the payments stream's normalization did not catch the missingness and forwarded an out-of-contract (silent) gap.",
+          "evidence": [
+            "Mart reconciles exactly to int_orders_joined (15/15 dates match between 2026-06-20 and 2026-07-05), so the defect is upstream of the mart.",
+            "In int_orders_joined, the share of orders with NULL order_revenue jumped from 100/4463 (2.2%) pre-onset to 866/2177 (39.8%) post-onset \u2014 a ~17x relative increase.",
+            "Of those 866 null-rev orders post-onset, 787 have ZERO rows in raw.raw_payments for their order_id (not even failed/pending).",
+            "The remaining 79 have a payment row but status='failed' or 'pending' (correctly filtered out by stg_payments).",
+            "The 787 missing-payment orders include 656 'delivered' orders and 21 'shipped' orders that have a shipment record but no payment record at all \u2014 the source payments feed is not recording transactions for these orders.",
+            "Per-order revenue for orders that DO have a successful payment is essentially unchanged ($87.92 pre vs $85.07 post), so amount values are fine; the gap is purely missingness.",
+            "avg_pre net_revenue ~$26,677/day; actual post-onset net_revenue averages ~$16,035/day; a back-of-envelope recovery adding ~$85 x 787 ~ $66,900 to the post window closes most of the gap.",
+            "Status distribution in raw.raw_orders introduces a new value 'shipped' (49 rows, all post-onset) that did not exist pre-onset \u2014 corroborates a source-side data quality event around 2026-06-28."
+          ],
+          "proposed_fix": "Add a guard to stg_payments (or a sibling dbt test) that detects and surfaces the missing-payments condition. The smallest change: add a dbt test that fails when raw.raw_orders has orders with no payment record of any status (or no successful payment when status in ('delivered','shipped','placed')) in the recent load window. Optionally, in stg_payments itself, add a freshness/row-count assertion or a left-anti-join diagnostic that exposes the orphan orders. Operationally, the underlying fix is in the payments source system: investigate why raw.raw_payments stopped emitting records for delivered/shipped orders starting 2026-06-28.",
+          "confidence": 0.92
         },
         "score": {
           "root_cause_correct": true,
-          "root_cause_expected": "int_orders_joined",
-          "root_cause_got": "int_orders_joined",
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both explanations identify the issue of duplicate shipment rows causing inflated order counts due to the join operation.",
+          "mechanism_reason": "Both explanations identify the failure of the stg_payments model to validate and normalize payment references, leading to missing revenue for orders.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix aggregates shipments to order_id grain before the join, which aligns with the acceptable fix of pre-aggregating shipments."
+          "fix_reason": "The proposed fix includes a check for missing payments, which aligns with the acceptable fix of adding a relationships/anti-orphan check on stg_payments.order_id against orders."
         },
-        "tool_calls": 15,
-        "wall_seconds": 75.8,
+        "tool_calls": 40,
+        "wall_seconds": 155.7,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      }
+    ]
+  },
+  {
+    "fault": "refund_unit_inflation",
+    "model": "minimax/minimax-m3",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "unit_change",
+    "difficulty": "hard",
+    "alert": "net_revenue in mart_revenue_daily is -88% vs the same-weekday trailing average, starting 2026-06-10",
+    "expected_root_cause": "stg_refunds",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      3,
+      5
+    ],
+    "mechanism_rate": [
+      4,
+      5
+    ],
+    "fix_rate": [
+      3,
+      5
+    ],
+    "root_cause_answers": {
+      "inconclusive": 1,
+      "stg_refunds": 3,
+      "mart_revenue_daily": 1
+    },
+    "avg_tool_calls": 24.0,
+    "avg_wall": 137.8,
+    "degraded_count": 1,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "inconclusive",
+          "mechanism": "Investigation did not converge within budget; forced summary failed (1 validation error for Diagnosis\nevidence\n  Input should be a valid list [type=list_type, input_value=\"1. mart_revenue_daily re...t triggered the fanout.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type).",
+          "evidence": [],
+          "proposed_fix": "Re-run with a larger tool-call budget.",
+          "confidence": 0.0
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_refunds",
+          "root_cause_got": "inconclusive",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation does not identify the same underlying causal mechanism as the ground truth, as it lacks a clear connection to the specific issues of refund amount inflation and its impact on net revenue.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of refund amounts or the sanity bound on refund amounts."
+        },
+        "tool_calls": 7,
+        "wall_seconds": 167.3,
+        "degraded": true,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_refunds",
+          "mechanism": "Starting 2026-06-10, raw_refunds.amount values arrive scaled ~40x higher than the corresponding payment amounts (e.g., an order with a $224.95 payment carries an $8,998.00 refund \u2014 exactly 40x). The stg_refunds model performs only a type cast (amount::numeric(10,2)) and forwards the field unchanged. It owns the responsibility of validating/normalizing the refund amount (range check, unit-of-measure check, plausibility vs. the original payment, non-negative bound), and it is missing that guard. The over-scaled value then propagates losslessly through int_orders_joined (whose SUM correctly sums what it receives; the LEFT JOIN chain is 1:1 on order_id) and into mart_revenue_daily, where sum(coalesce(refund_amount,0)) inflates the daily refunds_amount and depresses net_revenue by ~88% on and after 2026-06-10.",
+          "evidence": [
+            "mart_revenue_daily buckets (4w pre vs 8d post): orders_count ~314 vs ~312 (unchanged), total_revenue ~$26,982 vs ~$26,113 (unchanged), but refunds_amount $1,011/day vs $14,249/day (14x); net_revenue drops from $25,970 to $11,864 (alert cites -88% vs same-weekday trailing avg).",
+            "raw_refunds refund_amount vs the order's successful payment: pre-onset max ratio = 1.00, post-onset max ratio = 40.00. Concrete examples: O023641 pays $224.95 / refund $8,998.00 (40x), O022188 pays $204.97 / refund $8,198.80 (40x), O023018 pays $199.99 / refund $7,999.60 (40x), O022251 pays $144.98 / refund $5,799.20 (40x).",
+            "raw_refunds -> stg_refunds is lossless: row counts match (328 post-onset), sum matches ($441,909.57 in both), max amount matches (12,198.00 in both), diff = 0.00. The stg model neither drops nor transforms the 40x value.",
+            "int_orders_joined grain is correct on the path: stg_orders has 0 duplicate order_ids, raw_shipments has no order with >1 shipment, and the LEFT JOIN chain is 1:1 on order_id, so int_orders_joined's SUM over refund_amount faithfully equals what stg_refunds delivered. mart_revenue_daily's sum(coalesce(...)) is also semantically correct."
+          ],
+          "proposed_fix": "Add a guard in stg_refunds: assert amount is non-negative and within a plausible bound (e.g., amount <= 1000, or better, join to the order's payment and assert amount <= order_payment_amount, quarantining or filtering the violating rows). Minimal patch: add a where amount >= 0 filter and exclude rows where amount exceeds a sane ceiling so the 40x values do not silently flow into the mart.",
+          "confidence": 0.92
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_refunds",
+          "root_cause_got": "stg_refunds",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of validation and normalization in the stg_refunds model as the cause of inflated refund amounts affecting net revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a sanity bound on stg_refunds.amount, which aligns with the acceptable fix of ensuring refunds do not exceed order revenue."
+        },
+        "tool_calls": 32,
+        "wall_seconds": 127.8,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_refunds",
+          "mechanism": "Starting 2026-06-28, raw_refunds began delivering refund amounts in the thousands (avg $2,900, max $12,198, p99 $10,752) versus a historical pattern of avg $74, p99 $282, max $433. stg_refunds is the designated cleaning/staging model for raw_refunds but its SQL only renames columns and applies a mechanical amount::numeric(10,2) cast \u2014 it performs no null, range, or unit validation on refund amount. The out-of-contract values flow through unchanged into the refunds CTE of int_orders_joined, are joined to their orders on order_id (1:1, correct), and are then aggregated by ordered_at::date in mart_revenue_daily. Because the mart groups by order date, a $12K refund issued 2026-06-29 against an order placed 2026-06-19 inflates that day's refunds_amount to $12K against ~$22K of total_revenue, driving net_revenue sharply negative starting 2026-06-10 (the earliest ordered_at in the post-onset join) \u2014 exactly the -88% deviation flagged by the alert. The flaw is the missing guard in stg_refunds, which had the responsibility and opportunity to flag/normalize these anomalous values.",
+          "evidence": [
+            "mart refunds_amount by ordered_at date vs raw_refunds amount distribution: post-onset (>=2026-06-10) mart sum = 180,612.75 vs raw same-window sum = 13,477.38 \u2014 13x inflation explained by late-June refunds being joined back to early-June order dates.",
+            "raw_refunds amount jump on 2026-06-28: prior 7 days (06-21..06-27) avg $32\u2013$107/day; from 06-28 onward daily sum $20K\u2013$56K, avg $1.5K\u2013$4.3K per refund, max single refund $12,198.",
+            "Distribution in stg_refunds: normal period (pre-2026-06-28) avg $73.57, p99 $282.40, max $433.48; anomalous period (>=2026-06-28) avg $2,899.76, p99 $10,752.60, max $12,198.00 \u2014 ~38x p99 increase, clearly out-of-contract.",
+            "The refunds CTE in int_orders_joined is 1:1 on order_id (192 distinct order_ids for 192 rows) and stg_orders is 1:1 on order_id, so the join does not duplicate rows; the inflated refund_amount values are passed through faithfully.",
+            "stg_refunds raw_code is purely a column-rename + cast layer with no range or unit guard on amount, making it the model that owns the missing validation."
+          ],
+          "proposed_fix": "Add a sanity guard in stg_refunds: filter out (or flag) refund amounts that exceed a sensible upper bound derived from the historical distribution \u2014 e.g., where amount is not null and amount between 0 and 1000 (historical p99 was $282, max $433; $1000 is a generous cap) \u2014 or, if the high values are legitimate, add a unit/currency normalization step and notify the source owner that raw_refunds.amount semantics changed on/around 2026-06-28. As a minimal immediate fix, exclude or quarantine refund rows with amount > $1000 in stg_refunds so the mart's net_revenue reflects contracted values.",
+          "confidence": 0.88
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_refunds",
+          "root_cause_got": "stg_refunds",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of validation in stg_refunds as the cause of inflated refund amounts affecting net revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a sanity guard to filter out refund amounts that exceed a sensible upper bound, which aligns with the acceptable fix of adding a sanity bound on stg_refunds.amount."
+        },
+        "tool_calls": 28,
+        "wall_seconds": 118.0,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_refunds",
+          "mechanism": "The mart mart_revenue_daily computes net_revenue = total_revenue \u2212 refunds_amount, grouping by order date. Starting 2026-06-10, raw_refunds began delivering refund amounts far outside the historical contract (post-onset: avg $2,077, max $12,198 vs pre-onset p99 of $279, max $433). The stg_refunds model is a pure pass-through (refund_id, order_id, amount::numeric(10,2), reason, refunded_at) \u2014 it owns the place to validate/normalize refund magnitude but enforces no contract, so the out-of-range amounts flow unchanged into int_orders_joined (which correctly sums them per order_id) and then into mart_revenue_daily (which correctly subtracts them), producing a ~$15K-$35K/day refund spike that drives net_revenue deeply negative. The mart is not the root cause: its SQL is a faithful aggregate of its inputs; int_orders_joined is not the root cause: it faithfully joins and sums what stg_refunds supplies. stg_refunds is the designated cleaning model that owns the missing guard.",
+          "evidence": [
+            "Pre-onset (orders before 2026-06-10) refunds in mart: refunds_amount $269-$1,372/day, avg amount $83, p99 $279, max $433.",
+            "Post-onset (orders 2026-06-10+): refunds_amount jumps to $4K-$35K/day; stg_refunds amount avg $2,077, max $12,198.",
+            "98% of post-onset refund dollars ($177,364 of $180,613) come from amounts exceeding the historical p99 of $279, vs only 37% pre-onset ($7,033 of $18,867).",
+            "mart_revenue_daily net_revenue collapses from ~$24K/day to as low as -$7,663 on 2026-06-18.",
+            "Row counts, distinct refund_ids, rows_per_order in stg_refunds, and orders_count in the mart are all stable across onset \u2014 only amount magnitude shifts.",
+            "stg_refunds SQL: amount::numeric(10,2) as amount \u2014 a cast with no range/contract check, forwarding source values verbatim."
+          ],
+          "proposed_fix": "Add a magnitude/sanity guard in stg_refunds that drops or quarantines refund amounts outside the historical contract (e.g. where amount between 0 and 1000, or a percentile-based cap), and/or route rejected rows to a quarantine table. Downstream models will then receive only in-contract values and net_revenue will return to its pre-onset range.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_refunds",
+          "root_cause_got": "stg_refunds",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify stg_refunds as the source of inflated refund amounts that negatively impact net_revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a sanity guard on refund amounts, which aligns with the acceptable fix of adding a sanity bound on stg_refunds.amount."
+        },
+        "tool_calls": 26,
+        "wall_seconds": 128.5,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "mart_revenue_daily",
+          "mechanism": "mart_revenue_daily groups by ordered_at::date but joins in a per-order refund sum from int_orders_joined (refund_amount = sum of all refunds for that order regardless of refund date). The mart's grain contract (date_day) only applies to the order side; the refund side carries a hidden, different time dimension (refunded_at). All 980 refunds in raw_refunds arrive 3-21 days after ordered_at (no same-day refunds). Pre-2026-06-10, late-arriving refunds for an order were small (avg ~$74, max ~$433), so the order-date refund total looked stable. Starting 2026-06-10, large refunds (avg $1,347, max $12,198) start arriving days-to-weeks late for orders placed on or before 2026-06-09, and the mart books those on the original order date. The 10 refunds for 2026-06-09 orders include one $6,599.20 refund dated 2026-06-28 \u2014 yet the mart reports 2026-06-09's refund total as $7,302.49 and net_revenue as $15,605.29. By contrast, booking refunds on refunded_at::date (the actual refund day) gives 2026-06-09 refunds = $642.08 and 2026-06-10 refunds = $389.68, matching the pre-onset baseline.",
+          "evidence": [
+            "mart_revenue_daily vs recompute from int_orders_joined reconcile perfectly on 2026-05-20..06-20 (every row matches) \u2014 the defect is in or above int_orders_joined's grain assumption, not in mart-vs-int aggregation",
+            "int_orders_joined SQL joins refunds to orders on order_id and sums refunds per order; stg_refunds is a passthrough cast (no grain/date guard)",
+            "raw_refunds: 980 rows, 980 distinct refund_ids, 980 distinct order_ids \u2014 no grain duplication",
+            "refunded_at - ordered_at distribution: zero same-day refunds; refunds arrive 3-21 days late, identically pre- and post-onset",
+            "cross-join: 198 refund rows with refunded_at in 2026-06-01..06-20 belong to orders ordered BEFORE 2026-06-10, totaling $14,394.79 \u2014 stamped onto old order dates by the mart",
+            "magnitude shift: pre-onset avg refund $74 (max $433); post-onset avg $1,347 (max $12,198); 2026-06-28+ daily refund sums jump from ~$500/day to $30-50k/day",
+            "mart 2026-06-09 net = $15,605.29 / refunds = $7,302.49; the 10 refunds for 2026-06-09 orders actually happened 2026-06-13..2026-06-28 (R000771 = $6,599.20 on 2026-06-28)",
+            "rewriting the mart to book refunds on refunded_at::date restores 2026-06-09 refunds = $642.08 and 2026-06-10 refunds = $389.68, matching pre-onset values"
+          ],
+          "proposed_fix": "In mart_revenue_daily, stop summing per-order refund totals into the order-day bucket. Book refunds on the day they actually happened by grouping/summing refunds on refunded_at::date independently from the order-day grain \u2014 e.g. compute refunds_amount as the sum of refund amounts whose refunded_at::date equals the day bucket, joining stg_refunds to a date spine on refunded_at::date instead of relying on int_orders_joined's per-order refund_amount. (Equivalently, add refunded_at as a join key in int_orders_joined so the mart can sum refunds by their actual date.)",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_refunds",
+          "root_cause_got": "mart_revenue_daily",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of misalignment between the timing of refunds and the order dates, leading to inflated net revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The proposed fix does not address the normalization of refund amounts or the sanity bound on refund amounts, focusing instead on changing the aggregation method."
+        },
+        "tool_calls": 27,
+        "wall_seconds": 147.6,
         "degraded": false,
         "model": "minimax/minimax-m3"
       }
@@ -183,41 +888,39 @@
     "alert": "net_revenue in mart_revenue_daily is -33% vs the same-weekday trailing average, starting 2026-06-28",
     "expected_root_cause": "stg_payments",
     "n_trials": 5,
-    "n_scored": 3,
+    "n_scored": 5,
     "root_cause_rate": [
-      1,
-      3
+      5,
+      5
     ],
     "mechanism_rate": [
-      3,
-      3
+      5,
+      5
     ],
     "fix_rate": [
-      1,
-      3
+      5,
+      5
     ],
     "root_cause_answers": {
-      "stg_payments": 1,
-      "int_orders_joined": 2
+      "stg_payments": 5
     },
-    "avg_tool_calls": 44.3,
-    "avg_wall": 248.2,
+    "avg_tool_calls": 22.8,
+    "avg_wall": 104.8,
     "degraded_count": 0,
     "trials": [
       {
         "diagnosis": {
           "root_cause_model": "stg_payments",
-          "mechanism": "Starting 2026-06-28, ~30% of rows in raw.raw_payments with status='success' arrive with a NULL amount (1,188 such rows between 6-28 and 7-10, affecting all payment methods: card, paypal, bank_transfer, gift_card). stg_payments filters only on `status = 'success'` and applies `amount::numeric(10,2)`, which preserves NULL as NULL, so it silently passes malformed \"successful\" payments through. In int_orders_joined, `sum(amount) group by order_id` returns NULL order_revenue for any order whose only successful payments have NULL amounts (e.g., 105 of 346 orders on 6-28). mart_revenue_daily then evaluates `sum(coalesce(order_revenue, 0))`, which collapses those NULLs to $0 while still counting those orders in `orders_count` \u2014 so the daily numerator (revenue) is depressed by ~$58 per affected order while the denominator stays the same. That silent zeroing of missing-revenue orders is what produces the -33% net_revenue drop, even though row-level reconciliation between consecutive model hops is technically intact. The defect originates in stg_payments, whose SQL assumes every row with status='success' carries a usable amount and therefore fails to filter `amount is not null`.",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering NULL amount values on ~30% of status='success' rows (1,188 of 3,962 success payments; spread across every payment_method). The stg_payments cleaning model casts amount to numeric but performs no null guard \u2014 its only filter is status='success', so it faithfully forwards NULLs. Downstream, int_orders_joined does sum(amount) group by order_id; for the 1,122 orders whose only successful payments have NULL amount, the SUM returns NULL (standard SQL). The mart then does sum(coalesce(order_revenue, 0)), so those 1,122 orders are counted in orders_count but contribute 0 to revenue \u2014 crashing AOV from ~85 to ~57 and pulling net_revenue down ~33% exactly at onset. The int_* and mart_* models are not at fault: their SQL is faithful to standard aggregate semantics and the coalesce pattern. The missing guard belongs to stg_payments, which is the designated place to validate the source payment amount.",
           "evidence": [
-            "NULL-amount share in successful payments by day: 0% on 6-20..6-27, then 106/355=29.9% on 6-28, 89/294=30.3% on 6-29, 79/265=29.8% on 6-30, and 78-114/day through 7-10 - onset aligns exactly with 6-28.",
-            "int_orders_joined on 6-28: 346 order rows but only 241 have non-null order_revenue (vs 6-27: 369 rows / 363 non-null).",
-            "mart on 6-28: orders_count=346, total_revenue=20454.68 - the 105 NULL-revenue orders contribute $0 to revenue but are still counted in orders_count.",
-            "Refund-side and order-count side are stable: raw_orders counts match int_orders_joined counts (e.g., 346 = 346 on 6-28), so the break is on the payment/revenue leg, not order grain.",
-            "Affected payment methods on/after 6-28: card 812 NULLs, paypal 189, gift_card 124, bank_transfer 63 - systemic to the source, not isolated.",
-            "Net effect: 105 orders x ~$58 ~ $6,000 of revenue silently zeroed on 6-28 alone, matching the -33% net_revenue deviation versus same-weekday trailing average."
+            "1) Mart net_revenue drops from 26,162 avg to 17,361 avg starting 2026-06-28; orders_count is roughly stable (316\u2192307), AOV collapses 85.36\u219256.65.",
+            "2) Mart totals reconcile exactly to int_orders_joined sums for every post-onset day (e.g., 2026-06-28: 346 orders, total_revenue 20,454.68, refunds 36.53, net 20,418.15, AOV 59.12 \u2014 identical in both layers) \u2014 the break is upstream of int_orders_joined.",
+            "3) raw_payments: 0 null amounts before 2026-06-28; 1,188 of 3,962 (30%) success payments have null amount from 2026-06-28 onward, spread across card (812), paypal (189), gift_card (124), bank_transfer (63).",
+            "4) Of post-onset success payments, 1,122 orders have all-null amounts and 66 have mixed \u2014 the 1,122 all-null orders are the ones whose order_revenue becomes NULL in int_orders_joined (verified: 105 null_rev orders on 2026-06-28, 84 on 2026-06-29, ..., 141 on 2026-07-10 \u2014 matches the daily null_amt counts in raw_payments).",
+            "5) stg_payments SQL is `select ... amount::numeric(10,2) as amount ... from raw.raw_payments where status='success'` \u2014 no `amount is not null` guard; the cast NULL::numeric(10,2) is still NULL."
           ],
-          "proposed_fix": "Add `and amount is not null` to the WHERE clause in stg_payments so that successful payments missing an amount are not treated as revenue-bearing rows (i.e., change the filter to `where status = 'success' and amount is not null`). This restores order_revenue coverage in int_orders_joined (the 105 NULL-revenue orders on 6-28 will either re-aggregate from non-null payments or be excluded), and mart_revenue_daily's coalesce stops masking the gap. A regression test asserting `not_null stg_payments_amount` (or a dbt test checking that `sum(amount) in stg_payments` reconciles with `sum(order_revenue)` in int_orders_joined) would prevent recurrence.",
-          "confidence": 0.88
+          "proposed_fix": "In stg_payments, add a not-null guard to the WHERE clause: `where status = 'success' and amount is not null`. This prevents NULL-amount rows from reaching the revenue aggregate, restoring the 1,122 affected orders to contribute their actual revenue (orders whose only payments are all-null will correctly contribute 0). Optionally also add a dbt test `not_null` on stg_payments.amount to catch any recurrence at build time.",
+          "confidence": 0.97
         },
         "score": {
           "root_cause_correct": true,
@@ -225,78 +928,303 @@
           "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground-truth and agent's explanation identify the failure to filter out NULL amounts in successful payment rows as the root cause of understated revenue.",
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of a null guard on the amount in the stg_payments model as the root cause of the revenue understatement.",
           "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix includes a not null check on the amount, which aligns with the acceptable fixes."
+          "fix_reason": "The agent's proposed fix includes adding a not-null guard, which aligns with the first acceptable fix."
         },
-        "tool_calls": 33,
-        "wall_seconds": 220.2,
+        "tool_calls": 18,
+        "wall_seconds": 70.3,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
-          "root_cause_model": "int_orders_joined",
-          "mechanism": "Starting 2026-06-28, raw.raw_payments contains status='success' rows with NULL amount (106 of 355 success rows on 6/28, ~30% on subsequent days; pre-onset, 0 of 18589). stg_payments correctly passes these through with amount=NULL (its `amount::numeric(10,2)` is a no-op for NULLs). Then int_orders_joined's payments CTE does `sum(amount) as order_revenue` for each order, and SQL `sum()` silently ignores NULLs \u2014 so an order whose only successful payment has a NULL amount gets `order_revenue = NULL`. The mart's `sum(coalesce(order_revenue, 0))` then reports $0 for that order, while `count(*)` still counts it in `orders_count`. The AOV (total_revenue / orders_count) collapses from ~$85 to ~$60 because ~30% of daily orders are silently contributing zero revenue despite being \"successful\". This is the first model hop whose SQL turns the upstream data (NULL amounts) into a metric-impacting wrong output \u2014 stg_payments faithfully passes the NULLs through, and the mart merely aggregates what it receives.",
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began arriving with status='success' but amount=NULL for ~30% of rows. stg_payments does amount::numeric(10,2) which faithfully passes NULL through (no null/zero guard, no contract validation that a 'success' payment must have a non-null amount). In int_orders_joined, sum(amount) over those payments yields NULL, so the per-order order_revenue is NULL. The mart's coalesce(order_revenue,0) silently turns that into $0 of revenue for the affected orders, deflating total_revenue and net_revenue.",
           "evidence": [
-            "Mart AOV drops from $85.56 (May 1\u2013Jun 27 avg) to $56.65 (Jun 28\u2013Jul 10 avg); net_revenue -33% as alerted.",
-            "On 6/28: stg_payments has 355 rows with status='success' but only 249 non-NULL amounts (106 NULLs). Pre-onset (e.g., 6/27): 372 rows, 372 non-NULL. So NULL-amount success rows are new on/after 6/28.",
-            "raw.raw_payments has identical pattern: 6/28 = 355 success rows, 249 non-NULL amounts; pre-onset, every success row had a non-NULL amount.",
-            "stg_payments is a faithful pass-through: for each day, count(*), sum(amount), and avg(amount) of stg_payments exactly match raw_payments filtered to status='success'. No reconciliation break at stg_payments.",
-            "int_orders_joined reconciliation: for 6/28, ~105 of 346 orders have order_revenue=NULL. These are orders whose only success payment has amount=NULL. The mart coalesces NULL\u21920, so these orders contribute to orders_count but not to total_revenue \u2014 producing the AOV collapse.",
-            "Refund amount and orders_count remain reasonable; only total_revenue/net_revenue and AOV are affected, consistent with the per-order-revenue being silently zeroed for ~30% of daily orders."
+            "In raw.raw_payments, after 2026-06-28: 3960 successful payments, of which 1188 (30.00%) have amount=NULL. Before 2026-06-28: 18589 successful payments, 0 with NULL amount.",
+            "In analytics.int_orders_joined, 1289/3997 (32.25%) of orders with ordered_at>=2026-06-28 have NULL order_revenue, vs 365/18389 (1.98%) before \u2014 the increment matches the new NULL-amount successes plus the orders with no payment at all (168).",
+            "Specific example: order O027953 (ordered_at 2026-06-28 00:05) has successful payment P029859 with amount=NULL, and order_revenue is NULL in int_orders_joined.",
+            "The mart's sum(coalesce(order_revenue,0)) reconciles exactly to int_orders_joined row-for-row, so the mart SQL is correct given its input; the broken input is created upstream by stg_payments' unguarded cast."
           ],
-          "proposed_fix": "stg_payments: add `and amount is not null` to the WHERE clause alongside `status = 'success'`, so null-amount success rows are filtered at the staging layer and never reach int_orders_joined.",
+          "proposed_fix": "In stg_payments, add a guard that rejects (or quarantines) payments whose status='success' but amount IS NULL, e.g. `where status = 'success' and amount is not null` (and ideally `and amount > 0`). The smallest change is `where status = 'success' and amount is not null` so only well-formed successful payments propagate; the dropped rows should be surfaced via a test or quarantine model rather than silently zeroed downstream.",
           "confidence": 0.93
         },
         "score": {
-          "root_cause_correct": false,
+          "root_cause_correct": true,
           "root_cause_expected": "stg_payments",
-          "root_cause_got": "int_orders_joined",
+          "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground-truth and agent's explanation identify the issue of NULL amounts in successful payment rows leading to incorrect revenue calculations.",
-          "fix_acceptable": false,
-          "fix_reason": "The proposed fix filters out null amounts instead of failing loudly or quarantining them for reconciliation."
+          "mechanism_reason": "Both explanations identify the lack of a guard against NULL amounts in successful payments as the root cause for understated revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix quarantines success rows with NULL amounts, aligning with the acceptable fix of excluding or quarantining such rows."
         },
-        "tool_calls": 61,
-        "wall_seconds": 338.0,
+        "tool_calls": 25,
+        "wall_seconds": 136.9,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
-        "error": "agent: 'NoneType' object has no attribute 'model_dump'"
-      },
-      {
-        "error": "agent: 'NoneType' object has no attribute 'model_dump'"
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Beginning 2026-06-28 ~00:09 UTC, raw_payments started arriving with `amount = NULL` on roughly 30% of rows with `status='success'` (across card, paypal, bank_transfer, gift_card). stg_payments is the designated cleaning model for raw_payments: it filters to `status='success'` and casts `amount::numeric(10,2)`, but it does not validate that a successful payment row actually carries a numeric amount. The cast faithfully passes NULL through, so the guard is missing. In int_orders_joined, `sum(amount) group by order_id` correctly skips NULLs per SQL semantics, so those orders contribute 0 to `order_revenue` while still counting as a row. mart_revenue_daily's `count(*)` is therefore preserved but `sum(coalesce(order_revenue,0))` collapses the missing amounts, dropping total_revenue (and net_revenue) by ~30-40% on/after 2026-06-28 \u2014 matching the -33% alert.",
+          "evidence": [
+            "min(paid_at) for null-amount successful payments = 2026-06-28 00:09:21 \u2014 exactly the alert onset; 1188 such rows between 2026-06-28 and 2026-07-10",
+            "2026-06-27: 372 successful payments, 0 null amounts. 2026-06-28: 355 successful payments, 106 null amounts (29.9%); from 2026-06-28 onward ~28-34% of daily successful payments are null-amount, on every payment_method",
+            "mart_revenue_daily net_revenue: pre-onset 24,150-32,628; 2026-06-28 drops to 20,418 and continues falling to 14,529-15,535 through 2026-07-10 \u2014 a ~33-50% drop consistent with the NULL-amount share",
+            "stg_payments source: select ... amount::numeric(10,2) as amount ... where status='success' \u2014 passes NULL through unchanged; no not-null or range guard on amount",
+            "int_orders_joined and mart_revenue_daily both apply the value correctly: sum(amount) correctly skips NULLs; the defect originates upstream where the value entered the pipeline unvalidated"
+          ],
+          "proposed_fix": "Add a not-null guard on amount in stg_payments (the designated cleaning model for raw_payments), e.g.: `where status = 'success' and amount is not null` \u2014 or surface these to a quarantine/errors table for source investigation. This restores net_revenue to the same level as the 4 trailing same-weekdays and prevents the silent under-count going forward.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of validation for NULL amounts in successful payment rows as the root cause of understated revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a not-null guard on the amount in stg_payments, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 34,
+        "wall_seconds": 122.2,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
-          "root_cause_model": "int_orders_joined",
-          "mechanism": "Starting 2026-06-28, ~30% of successful payment rows in raw.raw_payments arrive with amount = NULL (1188 such rows through 2026-07-10; pre-onset count is 0). stg_payments correctly surfaces them (the cast ::numeric(10,2) preserves NULL). int_orders_joined then groups stg_payments by order_id, and sum(amount) over a group containing a NULL yields NULL, so order_revenue becomes NULL for those orders. The mart's sum(coalesce(order_revenue, 0)) then treats them as 0, silently dropping that revenue. With ~100 such orders per day at avg ~$85, the daily total_revenue drops by ~$8-10K (~30-35%), matching the -33% alert. The mart reconciles exactly with int_orders_joined (diff = 0.00 on every day), so the first hop that turns good inputs into bad output is the payments aggregation inside int_orders_joined, not stg_payments (which faithfully reflects the source).",
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering ~30% of successful-payment rows with NULL amount (106/355 on 2026-06-28, 89/294 on 2026-06-29, etc.; 0/408 on 2026-06-27). The stg_payments model performs only amount::numeric(10,2) with no NOT NULL / non-negative guard, so it faithfully passes the NULL through. In int_orders_joined, the payments CTE does sum(amount) as order_revenue grouped by order_id; when every success payment for an order is NULL, sum() returns NULL. mart_revenue_daily then applies coalesce(order_revenue, 0), which zeroes the contribution of those orders, and divides by count(*) (which still includes them) for AOV \u2014 producing the -33% net_revenue drop and a coincident AOV collapse. The breach is in the staging model that should have rejected or coerced an out-of-contract NULL amount on a success-status row.",
           "evidence": [
-            "Grain preserved: 1 row per order_id in int_orders_joined in both periods; no fan-out from shipments/refunds (zero multi-row orders in window).",
-            "Daily sum of non-null successful payments pre-onset is ~$24-32K/day; from 2026-06-28 onward ~$15-23K/day, and mart net_revenue moves 1:1.",
-            "int_orders_joined null order_revenue rows jump from ~5-11/day pre-onset to 79-119/day from 2026-06-28 onward, mirroring the NULL-amount counts.",
-            "Sample: order O028027 has one success payment P029941 with amount=NULL, paid_at=2026-06-28 16:01:11; stg_payments shows NULL; int_orders_joined row has order_revenue=NULL, which coalesces to 0 in the mart.",
-            "Raw successful payments: pre-onset 0 NULL amounts; from 2026-06-28 ~30% of success rows are NULL (e.g. 2026-06-28: 355 rows, 106 NULL; 2026-07-05: 380 rows, 114 NULL). 1188 such rows total, dated 2026-06-28 to 2026-07-10.",
-            "Mart vs int_orders_joined reconciliation 2026-06-21 to 2026-07-05: total_revenue diff = 0.00 every day, so the mart is not the breaker."
+            "1) mart_revenue_daily drops from ~$28k net on 2026-06-27 to $20k on 2026-06-28; AOV drops from ~$79 to ~$59.",
+            "2) int_orders_joined has 105 null order_revenue rows on 2026-06-28 vs 6 on 2026-06-27; total_revenue per day tracks the lost amount.",
+            "3) raw.raw_payments where status='success' shows 106/355 rows with amount IS NULL on 2026-06-28, 89/294 on 2026-06-29 ... 0/408 on 2026-06-27.",
+            "4) analytics.stg_payments samples for null-rev orders show amount=null on success rows (e.g. P029941 for O028027, P030371 for O028427).",
+            "5) 736/780 null-rev orders in int_orders_joined do have a success row in stg_payments \u2014 confirming the payment exists but the amount is null, not missing."
           ],
-          "proposed_fix": "In stg_payments, change `amount::numeric(10, 2) as amount` to `coalesce(amount, 0)::numeric(10, 2) as amount` so that NULL amounts in successful payments are coerced to 0 instead of poisoning the per-order sum. (If business policy is to drop orders with NULL-amount payments instead, filter them in stg_payments and emit a warning. Either fix must be made in stg_payments, since int_orders_joined is just a passthrough join over its inputs.)",
-          "confidence": 0.9
+          "proposed_fix": "Add a NULL/reject guard in stg_payments, e.g. `where status = 'success' and amount is not null` (or coalesce(amount,0)) plus a dbt test `not_null` on amount for success rows. This restores order_revenue to non-null and fixes both net_revenue and AOV in mart_revenue_daily.",
+          "confidence": 0.97
         },
         "score": {
-          "root_cause_correct": false,
+          "root_cause_correct": true,
           "root_cause_expected": "stg_payments",
-          "root_cause_got": "int_orders_joined",
+          "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of NULL amounts in successful payment rows leading to incorrect revenue calculations in the int_orders_joined aggregation.",
-          "fix_acceptable": false,
-          "fix_reason": "The proposed fix coerces NULL amounts to 0 instead of failing loudly or excluding them, which does not align with the acceptable fixes."
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of a NOT NULL guard on the amount field in the stg_payments model as the root cause of the issue with NULL amounts affecting revenue calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes a not_null test on stg_payments.amount, which aligns with the acceptable fixes."
         },
-        "tool_calls": 39,
-        "wall_seconds": 186.3,
+        "tool_calls": 13,
+        "wall_seconds": 91.3,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Beginning 2026-06-28, the source `raw.raw_payments` started delivering 80\u2013115 successful payments per day with NULL `amount` (1188 such rows through 2026-07-10, all with status='success' and a valid paid_at; zero rows are zero/negative). The `stg_payments` model is the designated cleaning stage for payments and its only transformation is `amount::numeric(10,2) as amount` plus the status filter. The cast faithfully passes NULL through, the `SUM(amount) GROUP BY order_id` in `int_orders_joined` then silently drops those NULLs, and the mart's `sum(order_revenue) - sum(refund_amount)` net_revenue is therefore under-counted by ~$100K cumulative (~30%/day since 2026-06-28), exactly matching the -33% alert. The flaw is the missing guard in `stg_payments` \u2014 the model is the owner of validating the amount field for successful payments but does not assert non-null, so an out-of-contract source value is forwarded to every downstream model.",
+          "evidence": [
+            "raw.raw_payments has 1188 rows with status='success' and amount IS NULL, ALL of them with paid_at >= 2026-06-28 (zero such nulls before that date); daily null counts 2026-06-28..2026-07-10 range 78\u2013114.",
+            "Implied missing revenue \u2248 1188 \u00d7 $84.18 avg = $100,002, accounting for the observed drop.",
+            "mart_revenue_daily: 2026-06-28 net_revenue=20418 vs same-DOW trailing avg 31284 (ratio 0.653), persistent 0.62\u20130.78x every day since; aov drops from ~$85 to ~$59 even as order counts stay near the trailing baseline (e.g. 346 vs ~370).",
+            "stg_payments SQL only does `amount::numeric(10,2) as amount ... where status='success'` \u2014 no null/range check, no coalesce, so NULLs are passed through unchanged."
+          ],
+          "proposed_fix": "In `stg_payments`, add a guard that excludes or flags NULL amounts for successful payments, e.g. add `and amount is not null` to the WHERE clause (and/or split success payments with amount into a clean stream and surface the NULL-amount ones in a quarantine/dedupe model). This restores the dropped ~$100K of revenue to int_orders_joined.order_revenue and therefore to mart_revenue_daily.net_revenue, while keeping the row out of the success path so the metric reflects paid revenue faithfully.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of a non-null guard on the amount field in the stg_payments model as the root cause of the revenue undercount.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of excluding or flagging NULL amounts aligns with the acceptable fix of quarantining success rows with NULL amounts."
+        },
+        "tool_calls": 24,
+        "wall_seconds": 103.4,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      }
+    ]
+  },
+  {
+    "fault": "status_case_drift",
+    "model": "minimax/minimax-m3",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "filter_regression",
+    "difficulty": "medium",
+    "alert": "net_revenue in mart_revenue_daily is -34% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      5,
+      5
+    ],
+    "mechanism_rate": [
+      5,
+      5
+    ],
+    "fix_rate": [
+      5,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_payments": 5
+    },
+    "avg_tool_calls": 16.6,
+    "avg_wall": 71.2,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "stg_payments filters raw_payments with the case-sensitive predicate `where status = 'success'`. Starting 2026-06-28, the source began emitting a new status value 'SUCCESS' (uppercase) at a rate of ~90-130 rows/day, totaling roughly $7K-$11K of revenue per day. Those rows are silently excluded by the filter, so for affected orders no row survives the payments CTE in int_orders_joined and order_revenue is NULL. mart_revenue_daily then coalesces order_revenue to 0, dropping total_revenue by ~34% on 2026-06-28 onward. Because mart_revenue_daily groups by ordered_at::date, the SAME recent days also show refunds_amount dropping to 0 (orders placed on those days are new and have no refunds yet, AND their revenue is missing); this is a downstream side effect, not a separate refund defect. The staging model's SQL semantics - a strict string equality on a field it is the designated place to normalize - is what owns the missing guard.",
+          "evidence": [
+            "mart_revenue_daily: net_revenue drops ~34% from 2026-06-28 onward (e.g., 2026-06-27 = 28495.91 -> 2026-06-28 = 19557.14)",
+            "int_orders_joined null-order_revenue rate jumps from 2.0% (pre-6-28) to 36.5% (on/after 6-28) over 12,514 orders",
+            "raw_payments: 'SUCCESS' (uppercase) first appears at 2026-06-28 00:00:45; 1,386 such rows from 6-28 through 7-10, summing to ~$110,940 of revenue that the lowercase filter `status = 'success'` excludes (e.g., 6-28: 122 rows / $9,584; 6-29: 104 / $9,601; 7-04: 133 / $10,898)",
+            "For affected orders in int_orders_joined, raw_payments has the payment row but with status='SUCCESS', confirming the gap is at the stg_payments filter, not in joins downstream",
+            "7-04+ refunds_amount = 0 in the mart is not a separate bug: those 830 orders are brand-new with order_revenue NULL and zero refunds in raw_refunds; refunds join correctly per the int_orders_joined SQL"
+          ],
+          "proposed_fix": "Update stg_payments to normalize the status field before filtering, e.g. `where lower(status) = 'success'`. Alternatively, use a status whitelist (`status in ('success','SUCCESS')`) or `status ilike 'success'`. Re-run dbt to rebuild mart_revenue_daily; net_revenue should recover the ~$7K-$11K/day it has been missing since 2026-06-28.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the case-sensitive filtering of payment statuses as the root cause for the revenue drop.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix to normalize the status field by using `where lower(status) = 'success'` matches the first acceptable fix."
+        },
+        "tool_calls": 25,
+        "wall_seconds": 107.4,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "stg_payments applies a case-sensitive filter `where status = 'success'` to the payments source. Beginning 2026-06-28, the upstream system started emitting the success status in uppercase ('SUCCESS') alongside the existing lowercase 'success'. The model does not normalize the status casing, so every uppercase 'SUCCESS' payment is silently dropped (1386 rows / ~$110k+ in the window). This reduces stg_payments' row count and sum(amount) per order, which flows through the `payments` CTE in int_orders_joined, collapsing `order_revenue` in mart_revenue_daily by ~30% starting 2026-06-28. Order counts are unaffected because the order grain comes from stg_orders. stg_payments is the designated cleaning model and owns the responsibility of validating/normalizing the status field; the missing guard is a case-insensitive (or case-normalized) status comparison.",
+          "evidence": [
+            "raw.raw_payments contains 4 status values: 'success' (30688), 'SUCCESS' (1386), 'failed' (1225), 'pending' (738).",
+            "analytics.stg_payments contains ONLY 'success' (30688) - the 1386 'SUCCESS' rows are silently dropped.",
+            "First 'SUCCESS' (uppercase) row appears on 2026-06-28 (matches alert onset); 0 uppercase rows exist before that date.",
+            "From 2026-06-28 onward, ~30-35% of daily payment rows are dropped: e.g., 2026-06-28 dropped $9,584.31 (122 rows), 2026-07-04 dropped $10,898.05 (133 rows).",
+            "Reconciliation: mart's total_revenue on 2026-06-28 = $19,593.67; adding back the dropped 'SUCCESS' amount = $19,593.67 + $9,584.31 = $29,177.98, in line with pre-onset daily totals of ~$28-30k.",
+            "orders_count is stable around the onset (369 on 06-27 vs 346 on 06-28), ruling out a join fan-out."
+          ],
+          "proposed_fix": "In stg_payments, normalize the status casing before filtering, e.g., `where lower(status) = 'success'`. This will restore the 1386 dropped payment rows and bring mart_revenue_daily.net_revenue back in line. Consider also adding a dbt test that asserts only known status values pass through.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of case sensitivity in the status field, leading to the exclusion of successful payments.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes normalizing the case in the filter, which aligns with one of the acceptable fixes."
+        },
+        "tool_calls": 10,
+        "wall_seconds": 42.7,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "On 2026-06-28, raw.raw_payments began arriving with status='SUCCESS' (uppercase) in addition to the existing 'success' (lowercase) value. stg_payments normalizes/cleans the source and filters with `where status = 'success'`, which is a case-sensitive equality in Postgres; rows with 'SUCCESS' are silently dropped at the staging layer, so order_revenue in int_orders_joined (and therefore total_revenue and net_revenue in mart_revenue_daily) loses ~30-35% of legitimate revenue starting 2026-06-28. The cleaning model is the designated place to validate/normalize the status field, and it failed to do so. Downstream models (int_orders_joined, mart_revenue_daily) all execute their SQL correctly given the inputs they receive.",
+          "evidence": [
+            "Distinct status values in raw.raw_payments: 'success' (30688 rows, 2026-04-01 to 2026-07-11), 'SUCCESS' (1386 rows, first_seen 2026-06-28, last_seen 2026-07-11), 'failed' (1225), 'pending' (738).",
+            "stg_payments contains 30688 rows \u2014 exactly the lowercase 'success' count, meaning all 1386 'SUCCESS' rows were dropped by the case-sensitive `where status = 'success'` filter.",
+            "mart_revenue_daily net_revenue drops from $26k\u2013$32k/day pre-onset to $14k\u2013$20k/day from 2026-06-28 onward (~-34%), with orders_count nearly unchanged (315 vs 307 avg). AOV falls from $85.53 to $53.38, consistent with missing revenue per order, not fewer orders.",
+            "In raw.raw_payments, 'success' count drops from 372 on 2026-06-27 to 233 on 2026-06-28; 'other' status count jumps to 122 on 2026-06-28, accounting for the missing ~140 payments/day.",
+            "Sample rows of the dropped 'SUCCESS' status show positive, plausible amounts ($59.99, $99.98, $127.95) on real order_ids starting 2026-06-28."
+          ],
+          "proposed_fix": "In stg_payments, make the status filter case-insensitive and normalize the value, e.g. `where lower(status) = 'success'` (and optionally `lower(status) as status` to standardize the output). This single change restores the ~30-35% of revenue that has been silently excluded since 2026-06-28.",
+          "confidence": 0.98
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of case sensitivity in the status field leading to the loss of legitimate revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix normalizes the case in the filter by using 'lower(status) = 'success'', which aligns with one of the acceptable fixes."
+        },
+        "tool_calls": 17,
+        "wall_seconds": 67.6,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Beginning 2026-06-28, raw_payments started receiving rows with status = 'SUCCESS' (uppercase) alongside the prior 'success' (lowercase) values. stg_payments filters with a case-sensitive equality `where status = 'success'`, so all 'SUCCESS' rows are silently dropped. This makes their orders' order_revenue NULL in int_orders_joined (via the LEFT JOIN), and mart_revenue_daily then sums coalesce(order_revenue, 0) \u2014 so those orders contribute $0 to total_revenue and net_revenue. With 843 such orders and $71,603.71 of dropped revenue over the first 8 post-onset days (~$9k/day), daily net_revenue drops ~34% vs the trailing same-weekday average, exactly matching the alert. The mart also uses count(*) (all orders) in the AOV denominator, but the alerted metric is net_revenue, which is affected only through the missing numerator.",
+          "evidence": [
+            "mart_revenue_daily net_revenue drops from ~$26k/day (Jun 20-27) to ~$15k/day (Jun 28+) \u2014 a ~34% drop matching the alert",
+            "int_orders_joined: orders with NULL order_revenue rise from 56/2619 (2.1%) pre-onset to 887/2545 (34.9%) post-onset; historical baseline is 515/25228 (2.0%)",
+            "raw_payments post-onset contains BOTH 'success' and 'SUCCESS' statuses \u2014 e.g. on 2026-06-28: 233 'success' + 122 'SUCCESS' rows",
+            "stg_payments post-onset contains ONLY 'success' (the filter `where status = 'success'` excludes the uppercase variant) \u2014 2576 rows, all lowercase",
+            "843 orders in the post-onset window have ONLY 'SUCCESS' (uppercase) payments, summing to $71,603.71 of revenue that exists in the source but never reaches the mart"
+          ],
+          "proposed_fix": "Make the stg_payments status filter case-insensitive (and normalize the column itself) \u2014 e.g. change the filter to `where lower(status) = 'success'` and/or add `lower(status) as status` in the SELECT. This single change restores the 843 dropped orders and their $71,603.71 of revenue to downstream models.",
+          "confidence": 0.98
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of case sensitivity in the status filtering leading to dropped revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of making the status filter case-insensitive by using 'lower(status) = 'success'' matches the first acceptable fix."
+        },
+        "tool_calls": 18,
+        "wall_seconds": 70.8,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began arriving with status 'SUCCESS' (uppercase) alongside the existing 'success' (lowercase). stg_payments filters with `where status = 'success'`, a case-sensitive equality check that silently drops all 'SUCCESS' rows. From 2026-06-28 onward, ~100 payments/day and ~$8K-$11K/day of revenue are dropped at the staging layer. Because the mart's net_revenue is computed via sum(coalesce(order_revenue,0)) - sum(coalesce(refund_amount,0)) over orders joined to these payments, total_revenue (and therefore net_revenue) drops ~30-40%, matching the -34% alert. Orders_count is unaffected because it counts from stg_orders. The mart's own SQL and int_orders_joined forward the already-truncated values correctly; the defect is the missing case-normalization guard that stg_payments is responsible for as the cleaning/validation model for payments.",
+          "evidence": [
+            "raw_payments: starting 2026-06-28 a new status value 'SUCCESS' appears (~92-133 rows/day) in addition to 'success' (per-day breakdown shows e.g. 2026-06-28: success=233, SUCCESS=122; 2026-07-04: success=248, SUCCESS=133).",
+            "stg_payments retains 0 rows with status='SUCCESS' between 2026-06-28 and 2026-07-10 (2575 'success', 0 'SUCCESS'), confirming the case-sensitive filter drops them.",
+            "Magnitude: between 2026-06-28 and 2026-07-10, 'SUCCESS' payments totaled $113,140 vs $199,910 in 'success' - a ~36% revenue exclusion, precisely matching the -34% net_revenue drop in mart_revenue_daily.",
+            "Mart daily values: AOV falls from ~$80-93 pre-onset to ~$50-58 post-onset while orders_count is stable (e.g. 2026-06-27: 369 orders, AOV 78.86 vs 2026-06-28: 346 orders, AOV 56.63), consistent with payments being dropped (not order volume changing).",
+            "Refunds in raw_refunds show no corresponding change pattern that would explain the magnitude; refunds dropping to 0 from 2026-07-04 is a smaller, secondary effect (only ~$1K/day vs $9K+ daily revenue impact from payments)."
+          ],
+          "proposed_fix": "Normalize case in stg_payments: change the filter to `where lower(status) = 'success'` (or `where status ilike 'success'`), and project a normalized status column. Optionally add a dbt test asserting status values are constrained to a known set so a future case change fails loudly.",
+          "confidence": 0.98
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of case sensitivity in the status field of payments leading to revenue loss.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes normalizing the case in the filter, which aligns with one of the acceptable fixes."
+        },
+        "tool_calls": 13,
+        "wall_seconds": 67.4,
         "degraded": false,
         "model": "minimax/minimax-m3"
       }
@@ -313,7 +1241,7 @@
     "n_trials": 5,
     "n_scored": 5,
     "root_cause_rate": [
-      1,
+      5,
       5
     ],
     "mechanism_rate": [
@@ -321,120 +1249,29 @@
       5
     ],
     "fix_rate": [
-      2,
+      5,
       5
     ],
     "root_cause_answers": {
-      "raw_payments": 4,
-      "stg_payments": 1
+      "stg_payments": 5
     },
-    "avg_tool_calls": 19.8,
-    "avg_wall": 97.8,
+    "avg_tool_calls": 21.0,
+    "avg_wall": 94.2,
     "degraded_count": 0,
     "trials": [
       {
         "diagnosis": {
-          "root_cause_model": "raw.raw_payments",
-          "mechanism": "Starting 2026-06-28, the raw_payments source table began recording bank_transfer payment amounts inflated by exactly 1000x. Pre-onset bank_transfer successful payments had a normal distribution (min $7.99, max $431.47, avg $84.00, n=1848); post-onset they jump to (min $799.00, max $30,696.00, avg $8,210.68, n=237) \u2014 a clean \u00d71000 scale shift. stg_payments faithfully applies its declared transformation (cast amount to numeric(10,2) and filter status='success'), so the inflated values flow into analytics.stg_payments unchanged. int_orders_joined then sums them per order as order_revenue, and mart_revenue_daily sums them into total_revenue (and net_revenue = total_revenue - refunds). Because bank_transfer accounts for ~10% of payment rows but contributes >$100k/day in extra revenue after onset, net_revenue spikes by ~393% on 2026-06-28. The defect is in the source data; no dbt model miscomputes, but the lineage root is the raw_payments source.",
-          "evidence": [
-            "mart_revenue_daily net_revenue jumps from ~$24-32k/day (pre-2026-06-28) to $112k-$286k/day (post), with aov jumping from ~$85 to $400-$700 \u2014 a per-row revenue shift, not a count shift.",
-            "orders_count remains stable (~270-380/day) across onset, so the spike is per-row revenue, not volume.",
-            "int_orders_joined row counts and distinct order_id counts match orders_count across onset (grain intact), so the join is not fanning out.",
-            "raw_payments shows the same spike: per-day bank_transfer sum goes from ~$1.7-2.8k (pre-onset) to $98k-$279k (post-onset), while card/gift_card/paypal remain flat.",
-            "Pre vs post bank_transfer successful payment stats: pre (n=1848, min=7.99, max=431.47, avg=83.99); post (n=237, min=799.00, max=30696.00, avg=8210.68) \u2014 the post distribution is exactly 1000x the pre.",
-            "All other payment methods (card, paypal, gift_card) remain at ~$80 avg with no shift at onset, isolating the defect to bank_transfer rows in raw_payments."
-          ],
-          "proposed_fix": "In stg_payments (or a new stg_payments_cleaned), detect and correct the 1000x inflation on bank_transfer amounts post-2026-06-28 \u2014 e.g., case when payment_method='bank_transfer' and paid_at >= '2026-06-28' and amount > 500 then amount/1000.0 else amount end. The proper long-term fix is to repair the bank_transfer ingest in raw.raw_payments (correct the unit so amounts are stored in dollars, not thousands of dollars/cents) and backfill from the source payment processor.",
-          "confidence": 0.97
-        },
-        "score": {
-          "root_cause_correct": false,
-          "root_cause_expected": "stg_payments",
-          "root_cause_got": "raw_payments",
-          "mechanism_correct": true,
-          "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the inflation of bank_transfer amounts by a factor of 1000 as the root cause of the revenue discrepancy.",
-          "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix includes normalizing bank_transfer amounts post-cutover date, which aligns with the first acceptable fix."
-        },
-        "tool_calls": 18,
-        "wall_seconds": 88.6,
-        "degraded": false,
-        "model": "minimax/minimax-m3"
-      },
-      {
-        "diagnosis": {
-          "root_cause_model": "raw_payments",
-          "mechanism": "Starting 2026-06-28, the source table raw_payments carries inflated payment amounts. Before onset, successful payment amounts average ~$84 with a max of ~$560 and p95 ~$229; after onset, the average jumps to ~$569, max $30,696, p95 $2,249 \u2014 a ~7x inflation that affects success, failed, and pending statuses alike. Because every dbt model in the lineage faithfully preserves the data it receives (stg_payments's `amount::numeric(10,2)` cast is lossless and `where status='success'` is unchanged; int_orders_joined correctly sums per order; mart_revenue_daily correctly sums per day), the inflation propagates directly into the mart's order_revenue and net_revenue aggregates. stg_payments sum == raw_payments sum (status='success') for every day (diff = 0.00), and the mart's per-day total_revenue equals int_orders_joined's per-ordered_at sum \u2014 so there is no model in the chain that turns correct inputs into incorrect output. The reconciliation never breaks at a model hop; the defect is that the source itself began producing anomalous amounts on 2026-06-28, and the pipeline correctly (but unhappily) reflects that.",
-          "evidence": [
-            "Mart total_revenue jumps from ~$29k/day pre-onset to ~$147k\u2013$292k/day post-onset (e.g., 6/27: $29,199 \u2192 6/28: $146,783; 7/4: $286,207) while orders_count stays in the normal 264\u2013378/day range.",
-            "stg_payments.amount avg $84 (max $560, p95 $229) before vs avg $569 (max $30,696, p95 $2,249) after; same shift appears in raw_payments for all three statuses (success, failed, pending).",
-            "stg_payments (status='success') sum equals raw_payments (status='success') sum exactly per paid_at day (e.g., 6/28: 147,033.18 == 147,033.18, diff 0.00; verified for 2026-06-25 through 2026-07-05 with zero diff).",
-            "int_orders_joined sum(order_revenue) by ordered_at::date matches mart total_revenue (e.g., 6/28: 146,783 == 146,783; 7/4: 286,207 == 286,207).",
-            "int_orders_joined row count == stg_orders row count (31,844 == 31,844), so no row fan-out from the shipments LEFT JOIN; shipments_per_order = 1.00 before and after onset (no duplicate-shipment inflation).",
-            "No payment_id duplicates (32,074 rows == 32,074 distinct), no null/zero amounts, no truncation (stg.amount == raw.amount for all 32,074 rows checked).",
-            "Date-drift between ordered_at and paid_at is ~0.7% pre vs ~0.8% post and is not the source of the inflation; on 6/28, 350 of 352 successful payments for orders placed that day were paid the same day."
-          ],
-          "proposed_fix": "Investigate the upstream source feeding raw_payments on or after 2026-06-28 \u2014 the payment amounts themselves are wrong at ingest, not at any dbt transformation. Once the source is corrected and raw_payments is reloaded/backfilled for 2026-06-28 onward, re-run dbt to refresh stg_payments \u2192 int_orders_joined \u2192 mart_revenue_daily. If a permanent guard is desired, add a dbt test on stg_payments that flags amount values outside the historical distribution (e.g., > $1,000 or > 10x the rolling median per payment_method) so future anomalies are caught at the staging layer.",
-          "confidence": 0.78
-        },
-        "score": {
-          "root_cause_correct": false,
-          "root_cause_expected": "stg_payments",
-          "root_cause_got": "raw_payments",
-          "mechanism_correct": true,
-          "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground-truth mechanism and the agent's explanation identify the source of inflated payment amounts in the raw_payments table, which propagates through the pipeline without normalization or correction.",
-          "fix_acceptable": false,
-          "fix_reason": "The agent's proposed fix focuses on upstream corrections rather than directly addressing the normalization of amounts or implementing a sanity test on stg_payments as specified in the acceptable fixes."
-        },
-        "tool_calls": 33,
-        "wall_seconds": 163.5,
-        "degraded": false,
-        "model": "minimax/minimax-m3"
-      },
-      {
-        "diagnosis": {
-          "root_cause_model": "raw.raw_payments",
-          "mechanism": "Beginning 2026-06-28, the raw_payments source table contains corrupted bank_transfer payment amounts \u2014 each is ~100x its expected value (avg $8,210 post-onset vs $86 pre-onset; e.g. one record shows $30,696 for a single bank_transfer that should be on the order of $100s). All bank_transfer records carry status='success' so stg_payments (which filters to status='success') faithfully passes them through unchanged, and the inflated amounts are summed into order_revenue in int_orders_joined, then into total_revenue/net_revenue in mart_revenue_daily. Other payment methods (card, gift_card, paypal) and other dimensions of the orders/refunds data are unaffected; the entire anomaly traces to this single column/method combination in the source.",
-          "evidence": [
-            "mart_revenue_daily: net_revenue jumps from ~$24-31k/day (2026-06-21..27) to $120-286k/day from 2026-06-28 onward \u2014 a ~4-10x increase with the same order count (~280-380 orders/day).",
-            "int_orders_joined: total_revenue 2026-06-21..2026-07-10 sums to ~$2.25M post-onset vs ~$191k pre-onset, with grain preserved (1 row per order_id, 3997 vs 2226 distinct orders).",
-            "stg_payments / raw.raw_payments by method: post-onset bank_transfer success avg amount = $8,210.68 (n=237, min $799, max $30,696) vs pre-onset avg $86.44 (n=157, min $7.99, max $285.97). Other methods unchanged: card $85 vs $87, gift_card $69 vs $69, paypal $82 vs $85.",
-            "Onset is exactly 2026-06-28 and is exclusive to the bank_transfer payment_method, ruling out model logic defects in stg_payments / int_orders_joined / mart_revenue_daily \u2014 each is a faithful pass-through of the source values."
-          ],
-          "proposed_fix": "Correct the bank_transfer amount values in raw.raw_payments for paid_at >= 2026-06-28 (the values appear ~100x inflated, suggesting a missing decimal point / unit-conversion error at the source). After the source is fixed, re-run dbt to refresh stg_payments \u2192 int_orders_joined \u2192 mart_revenue_daily. If the upstream system cannot be corrected in place, add a sanity check in stg_payments (e.g. cap or flag bank_transfer amounts > N standard deviations from the pre-onset mean) so the corruption cannot propagate to net_revenue again.",
-          "confidence": 0.95
-        },
-        "score": {
-          "root_cause_correct": false,
-          "root_cause_expected": "stg_payments",
-          "root_cause_got": "raw_payments",
-          "mechanism_correct": true,
-          "mechanism_score": 1.0,
-          "mechanism_reason": "Both explanations identify the same issue of corrupted bank_transfer amounts being passed through without normalization, leading to inflated revenue figures.",
-          "fix_acceptable": true,
-          "fix_reason": "The agent's proposed fix includes adding a sanity check in stg_payments to prevent corrupted bank_transfer amounts from propagating, which aligns with the acceptable fix of adding a sanity bound test."
-        },
-        "tool_calls": 13,
-        "wall_seconds": 60.1,
-        "degraded": false,
-        "model": "minimax/minimax-m3"
-      },
-      {
-        "diagnosis": {
           "root_cause_model": "stg_payments",
-          "mechanism": "stg_payments treats every status='success' payment as realized revenue regardless of payment_method. Starting 2026-06-28, raw.raw_payments began receiving bank_transfer 'success' payments at ~$6K\u2013$28K each (avg $8,210 vs the historical norm of $84, p95 $229, max $431), totaling $1.95M across 237 records over the next ~13 days. stg_payments faithfully passes these through, int_orders_joined sums them per order_id, and mart_revenue_daily rolls them into total_revenue and net_revenue, producing the +393% spike. Card, gift_card, and paypal methods are unchanged. The orders themselves are legitimate (delivered, with shipments, varied customers), so the anomaly is the payment amounts, not a join/aggregation bug. The model's SQL assumption that any 'success' payment is settled revenue is what is violated for bank_transfer.",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering payment amounts that are ~100x the historical norm (e.g., $16,947.00 instead of $169.47; $27,997.00 instead of $279.97) \u2014 consistent with a unit change in the source (dollars \u2192 cents) without a corresponding unit indicator. stg_payments is the designated staging/cleaning model for payments, but its SQL only does a faithful pass-through cast (`amount::numeric(10,2)`) and a status filter; it owns no range, unit, or sanity guard. The inflated values flow through unchanged into int_orders_joined (which correctly sums them per order) and then into mart_revenue_daily, where they inflate total_revenue and net_revenue by ~5x and AOV by ~5x. The mart and intermediate models are mechanically correct given their inputs; the defect is the missing guard in the staging model that should have detected or normalized the unit change.",
           "evidence": [
-            "1. mart_revenue_daily.net_revenue jumps from ~$25K/day (Jun 21\u201327) to $147K\u2013$286K/day from Jun 28 onward, with aov jumping from ~$85 to $400\u2013$757.",
-            "2. int_orders_joined output reconciles exactly to the mart (rows = distinct_orders per day, revenue matches); order counts are stable.",
-            "3. stg_payments daily totals match int_orders_joined revenue exactly; the breach is in the raw amounts entering stg_payments.",
-            "4. By payment_method: pre-onset bank_transfer success rows = 1,848, sum $155,217.62, avg $83.99, max $431.47, p95 $229.45. Post-onset (>= 2026-06-28): 237 rows, sum $1,945,930.00, avg $8,210.68. Card/gift_card/paypal averages stay in the $70\u2013$90 range across the boundary.",
-            "5. Sample anomalous rows: P030248 $27,997 bank_transfer 2026-06-29, P030645 $21,899 on 2026-06-30, P030851 $19,247 on 2026-07-01 \u2014 all 'success', all bank_transfer.",
-            "6. Shipments and refunds have no duplicate order_ids, so no fan-out in int_orders_joined."
+            "mart_revenue_daily.net_revenue jumps from ~$24-32k/day (Apr 1 \u2013 Jun 27) to $146-286k/day starting 2026-06-28; AOV jumps from ~$80-90 to $400-775.",
+            "int_orders_joined total_revenue reconciles exactly with mart_revenue_daily.total_revenue on every date (e.g., 2026-06-28: $146,783.23 in both), so the mart is not the break.",
+            "stg_payments post-2026-06-28 has 2,585 rows with max amount $30,696.00 and min $1.50; pre-onset max was $557.99.",
+            "raw_payments post-2026-06-28 has 133 payments with amount > $1,000 (vs 0 in the prior 27 days of June), and the top amounts (16947, 15996, 12998, 10498, 9999, 8499, 6450, 6249, 4998) are exactly 100x plausible order totals \u2014 a clear unit-mismatch signature.",
+            "stg_payments SQL is `amount::numeric(10,2) as amount ... where status='success'` \u2014 a pass-through cast with no range/unit guard, so the 100x values are forwarded verbatim."
           ],
-          "proposed_fix": "In stg_payments, exclude bank_transfer payments from the revenue-bearing stream until a clearing/settlement flag is available. Smallest change: in the WHERE clause, change `where status = 'success'` to `where status = 'success' and payment_method <> 'bank_transfer'`, with a comment to re-include once bank_transfer clearing is tracked. This drops ~$1.95M of inflated revenue and restores net_revenue to the historical ~$25K/day level without affecting card/gift_card/paypal revenue.",
-          "confidence": 0.92
+          "proposed_fix": "Add a unit/range guard in stg_payments: either (a) reject/flag amounts above a sane per-payment ceiling (e.g., amount > 10000) and surface them as a data-quality exception, or (b) detect the cents-vs-dollars shift (e.g., by comparing against historical distribution or a source-supplied unit flag) and divide by 100 before casting. The smallest correct change is to add a WHERE/filter or CASE in stg_payments that normalizes the unit so downstream sums reflect dollars.",
+          "confidence": 0.95
         },
         "score": {
           "root_cause_correct": true,
@@ -442,41 +1279,132 @@
           "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of unit normalization and the treatment of inflated bank_transfer amounts as legitimate revenue in the stg_payments model.",
-          "fix_acceptable": false,
-          "fix_reason": "The proposed fix does not address the normalization of bank_transfer amounts or implement a sanity bound test, which are the acceptable fixes."
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of unit normalization in the stg_payments model as the root cause of inflated payment amounts.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes a normalization step for amounts, which aligns with the acceptable fix of normalizing bank_transfer amounts in stg_payments."
         },
-        "tool_calls": 19,
-        "wall_seconds": 111.2,
+        "tool_calls": 17,
+        "wall_seconds": 55.2,
         "degraded": false,
         "model": "minimax/minimax-m3"
       },
       {
         "diagnosis": {
-          "root_cause_model": "raw.raw_payments",
-          "mechanism": "Beginning 2026-06-28, the source system started writing inflated `amount` values for `payment_method = 'bank_transfer'` (avg amount jumped from ~$88 to ~$7,935; max $30,696; values are round thousands like 9,999 / 15,996). Every downstream dbt model \u2014 stg_payments (cast + `where status='success'`), int_orders_joined (`sum(amount) group by order_id`), and mart_revenue_daily (`sum(order_revenue) - sum(refund_amount) as net_revenue`) \u2014 is a faithful transformation: each model's output reconciles exactly with its inputs. The mart's net_revenue therefore inflates ~4-7x starting 2026-06-28 because the order_revenue term carries the corrupted bank_transfer payments, while the symmetric drop in refunds to $0 (after 2026-07-04) is a separate but related source-feed anomaly on raw_refunds. AOV rises from ~$85 to $400-700 because it divides inflated total_revenue by an unchanged order count.",
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments began delivering 133 payments with amounts in the $1,000\u2013$30,696 range that, when divided by 100, fall precisely in the pre-onset distribution (avg $82.57 vs $84.85, median $59.99 vs $59.99, min $12.50 vs $0.96, max $306.96 vs $498.47). The source appears to have switched from dollars to cents for a subset of payments (likely bank_transfer records). stg_payments is the designated cleaning model for raw_payments and its SQL does only a faithful `amount::numeric(10,2)` cast plus a `status='success'` filter \u2014 it performs no unit, range, or magnitude validation, so it forwards the inflated values unchanged. int_orders_joined then correctly sums them per order, and mart_revenue_daily correctly sums them per day, producing the +393% net_revenue spike. The mart's total ($1,241,376.81) reconciles to stg_payments' total ($1,241,451.27), confirming the mart and intermediate models are mechanically correct; the defect is the missing unit guard in stg_payments.",
           "evidence": [
-            "raw.raw_payments: avg(amount) by method, before vs after 2026-06-28 \u2014 bank_transfer: $87.88 -> $7,935.50 (139 rows, max $30,696); card/gift_card/paypal unchanged (~$70-87 avg).",
-            "raw.raw_payments daily avg(amount) 2026-06-20..2026-07-01: $83-95 prior to 2026-06-28; $405-662 from 2026-06-28 onward \u2014 exact onset of the alert.",
-            "Analytics.mart_revenue_daily AOV rises from ~$85 to $424-757 starting 2026-06-28 while orders_count stays flat at 264-378 \u2014 proves revenue is the changed term, not order volume.",
-            "End-to-end trace of payment P029910 (O028000, $9,999 bank_transfer): raw.raw_payments = 9999.00 -> stg_payments = 9999.00 -> int_orders_joined.order_revenue = 9999.00 -> mart net_revenue includes it on 2026-06-28. Every dbt hop is a faithful pass-through; reconciliation only breaks at the raw source.",
-            "stg_payments, int_orders_joined, and mart_revenue_daily SQLs are all arithmetically correct; they neither scale, multiply, nor miscast the amount column."
+            "Onset confirmed at 2026-06-28: max payment amount jumps from $498.47 (2026-06-27) to $16,947 (2026-06-28) and stays elevated.</item>",
+            "133 payments after onset have amount > $1000 (all 2-decimal precision); 0 such payments before onset.</item>",
+            "Post-onset over-$1000 amounts divided by 100: avg $82.57, median $59.99, min $12.50, max $306.96 \u2014 matches pre-onset distribution (avg $84.85, median $59.99, min $0.96, max $498.47) almost exactly, confirming a cents-as-dollars unit error.</item>",
+            "Mart total_revenue ($1,241,376.81) reconciles to stg_payments sum ($1,241,451.27) for the post-onset window \u2014 mart and int_orders_joined are mechanically correct.</item>",
+            "stg_payments SQL: `amount::numeric(10,2) as amount ... where status='success'` \u2014 no range/unit guard, so it forwards the inflated values unchanged."
           ],
-          "proposed_fix": "Fix is upstream of dbt: correct the bank_transfer amount values in raw.raw_payments for paid_at >= 2026-06-28 (and audit the source ingestion job that began producing inflated values on that date). After the source is corrected, re-run dbt to refresh stg_payments, int_orders_joined, and mart_revenue_daily. Until then, the analytics layer cannot self-heal \u2014 no dbt model logic is wrong.",
+          "proposed_fix": "In stg_payments, normalize the unit when the raw amount is implausibly large for a single payment: e.g., `case when amount > 1000 then amount / 100.0 else amount end as amount` (or, more robustly, detect via a per-method/per-source unit convention). This restores the post-onset distribution to the pre-onset range and corrects net_revenue in mart_revenue_daily without changing any downstream model.",
           "confidence": 0.95
         },
         "score": {
-          "root_cause_correct": false,
+          "root_cause_correct": true,
           "root_cause_expected": "stg_payments",
-          "root_cause_got": "raw_payments",
+          "root_cause_got": "stg_payments",
           "mechanism_correct": true,
           "mechanism_score": 1.0,
-          "mechanism_reason": "Both the ground truth and the agent's explanation identify the same issue of inflated bank_transfer amounts affecting downstream revenue calculations without normalization.",
-          "fix_acceptable": false,
-          "fix_reason": "The proposed fix does not address the normalization of bank_transfer amounts directly in stg_payments or implement a sanity bound test, focusing instead on upstream corrections."
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of unit normalization in stg_payments as the root cause of the inflated revenue amounts.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix normalizes bank_transfer amounts based on a threshold, which aligns with the acceptable fix of normalizing amounts from the cutover date."
         },
-        "tool_calls": 16,
-        "wall_seconds": 65.6,
+        "tool_calls": 19,
+        "wall_seconds": 70.2,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments rows with payment_method='bank_transfer' began arriving with amount values that are exactly 100x the historical norm (e.g., 30696.00 instead of 306.96, 29946.00 instead of 299.46) \u2014 a cents-vs-dollars unit error in the source. stg_payments is the designated cleaning/staging model for payments; its SQL is a mechanical pass-through (`amount::numeric(10,2) ... where status='success'`) with no unit, range, or sanity guard. It forwards the out-of-contract values verbatim. int_orders_joined then correctly sums them per order, and mart_revenue_daily correctly sums them per day, so the inflated bank_transfer amounts propagate straight into total_revenue and net_revenue. The defect is the MISSING guard in stg_payments \u2014 the model that owns payment normalization did not catch or correct the unit anomaly.",
+          "evidence": [
+            "mart_revenue_daily net_revenue jumps from ~$24-28k/day (Jun 21-27) to $120-286k/day (Jun 28-Jul 5), a ~5x lift, while orders_count stays flat (~270-380/day).",
+            "raw_payments bank_transfer avg amount: $83.99 before onset (n=1848, max $431.47) vs $8,210.68 after onset (n=237, max $30,696.00) \u2014 ratio 97.75x.",
+            "All 237 bank_transfer payments after onset are integer-valued (amount = floor(amount)), and 228 of 237 exceed $1,000; before onset, 0 of 1848 exceeded $1,000.",
+            "Top after-onset amounts (30696, 29946, 27997, 27947, 27498, ...) divided by 100 yield plausible dollar values (306.96, 299.46, 279.97, ...) consistent with the pre-onset bank_transfer distribution.",
+            "stg_payments preserves the inflated values unchanged (avg $8,210.68, max $30,696.00 after onset), confirming it does not validate or normalize the unit.",
+            "int_orders_joined row count per day equals distinct order_id count (no join-duplication), and orders_count in the mart matches raw_orders \u2014 so the inflation is purely in the amount column, not in row count."
+          ],
+          "proposed_fix": "In stg_payments, normalize the bank_transfer unit by dividing amount by 100 (e.g., `case when payment_method = 'bank_transfer' then amount::numeric(10,2) / 100.0 else amount::numeric(10,2) end as amount`), or add a range guard that rejects/flags amounts above a sensible threshold. The smallest change is the conditional /100 for bank_transfer, which restores net_revenue to its pre-onset baseline.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "The agent's explanation accurately identifies the lack of unit normalization in stg_payments as the cause of the inflated amounts, which aligns with the ground-truth mechanism.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of normalizing bank_transfer amounts by dividing by 100 directly aligns with the first acceptable fix."
+        },
+        "tool_calls": 20,
+        "wall_seconds": 67.6,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, raw_payments rows with payment_method='bank_transfer' arrive with amounts that are 100\u00d7 too large (e.g., $7.99 \u2192 $799.00, $279.97 \u2192 $27997.00). All 260 post-onset bank_transfer rows are whole numbers with no decimals, and dividing by 100 restores them to the pre-onset distribution (post-onset /100: min $7.99, max $306.96, avg $81.35, matching pre-onset bank_transfer avg $83.90). stg_payments is the designated cleaning model for payments \u2014 its SQL filters by status='success' and casts amount to numeric(10,2), but it owns no range or unit guard on the amount field, so it faithfully forwards the 100\u00d7 inflated values. int_orders_joined then sums them per order_id, and mart_revenue_daily sums them per day, producing the +393% net_revenue spike. Reconciliation confirms the mart matches int_orders_joined exactly ($146,783.23 on 2026-06-28), so the defect is upstream of the mart and downstream of the raw source \u2014 it is the missing guard in stg_payments.",
+          "evidence": [
+            "Pre-onset bank_transfer (paid_at < 2026-06-28): n=1964, min=$7.99, max=$438.98, avg=$83.90. Post-onset: n=260, min=$799.00, max=$30696.00, avg=$8134.78 \u2014 all 260 rows are whole numbers (whole_number_count=260).",
+            "Post-onset bank_transfer amounts / 100: min=$7.99, max=$306.96, avg=$81.35 \u2014 matches pre-onset distribution, confirming a unit/cents error in the source.",
+            "First anomalous day is 2026-06-28 (19 bank_transfer rows with amount > $500, max $16,947). Pre-onset 2026-06-27: 0 bank_transfer rows above $500.",
+            "Reconciliation: mart_revenue_daily.total_revenue for 2026-06-28 = $146,783.23; int_orders_joined sum for 2026-06-28 = $146,783.23 (exact match). stg_payments sum for 2026-06-28 = $147,033.18 (includes the inflated bank_transfer values).",
+            "stg_payments SQL: `select payment_id, order_id, amount::numeric(10,2) as amount, ... where status='success'` \u2014 no range check, no unit normalization, no upper bound. The cast passes the bad value through unchanged.",
+            "Quantified inflation: post-onset bank_transfer total = $2,115,044.00 vs corrected = $21,150.44 \u2014 a $2,093,893.56 over-count, which fully accounts for the daily revenue jump from ~$28k to ~$147k+ on 2026-06-28."
+          ],
+          "proposed_fix": "In stg_payments, add a unit/range guard on the amount field for bank_transfer payments. Smallest change: normalize the value when it is implausibly large, e.g. `case when payment_method='bank_transfer' and amount > 500 then amount/100.0 else amount end as amount` (pre-onset bank_transfer max was $438.98, so >500 is a safe threshold). Alternatively, add a dbt test that fails when any bank_transfer amount exceeds a sane ceiling, and reject/flag those rows.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of unit normalization in stg_payments as the cause of the inflated amounts.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes adding a sanity check on the amount field for bank_transfer payments, which aligns with the acceptable fix of adding a sanity bound to catch unit drift."
+        },
+        "tool_calls": 19,
+        "wall_seconds": 109.6,
+        "degraded": false,
+        "model": "minimax/minimax-m3"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Beginning 2026-06-28, the upstream bank_transfer payment provider began reporting payment amounts in cents (minor units) rather than dollars. stg_payments is the designated cleaning model for raw_payments (its description states it filters by status, demonstrating it owns data-quality guards), and its SQL only casts amount to numeric(10,2) and filters status='success'. It forwards the 100x-inflated bank_transfer amounts without any range or unit check. int_orders_joined then sums those amounts per order to compute order_revenue, and mart_revenue_daily aggregates them into net_revenue, producing a ~4x revenue spike (e.g., 2026-06-28 net_revenue=$146,747 vs ~$28K baseline; bank_transfer alone contributes $1.95M of the $2.25M post-onset successful-payment revenue, ~$1.93M of which is the 100x overstatement). Grain checks confirm int_orders_joined is still 1 row per order_id (no join duplication), so the fault is not in the aggregation.",
+          "evidence": [
+            "1) mart_revenue_daily net_revenue jumps from ~$24-28K/day pre-onset to $146-286K/day from 2026-06-28 onward.",
+            "2) stg_payments bank_transfer avg amount: $84 (pre) vs $8,135 (after), median $64 vs $5,999; max $439 vs $30,696; while card/paypal/gift_card averages stay flat (~$71-86).",
+            "3) All 260 post-onset bank_transfer amounts are whole numbers >= $799 (e.g., 799, 1499, 9999, 19999, 30696); pre-onset max was $438.98 and amounts had fractional cents.",
+            "4) Dividing post-onset bank_transfer amounts by 100 reproduces the pre-onset distribution: post bank_transfer avg/100 = $81.35 ~= pre bank_transfer avg $84; post median/100 = $59.99 ~= pre median $64.49.",
+            "5) Sum of post-onset raw_payments success amounts: $2,254,297 currently; $327,826 if bank_transfer is divided by 100 - an overstatement of $1,926,471, fully accounting for the mart spike.",
+            "6) int_orders_joined grain: 1 row per order_id before and after onset - no join-induced duplication.",
+            "7) stg_payments SQL performs only amount::numeric(10,2) and a status filter; no range, unit, or sanity guard on amount, despite being the documented cleaning model for raw_payments."
+          ],
+          "proposed_fix": "In stg_payments, detect and normalize the cents-as-dollars bank_transfer values from the post-onset provider, e.g. add: case when payment_method = 'bank_transfer' and amount >= 500 then amount / 100.0 else amount end as amount (or an equivalent guard / upstream provider fix) so the 100x-inflated amounts are converted back to dollars before being summed by int_orders_joined and mart_revenue_daily.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the failure to normalize payment amounts from cents to dollars as the underlying causal mechanism leading to inflated revenue figures.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix normalizes bank_transfer amounts by dividing by 100 for inflated values, aligning with the first acceptable fix."
+        },
+        "tool_calls": 30,
+        "wall_seconds": 168.4,
         "degraded": false,
         "model": "minimax/minimax-m3"
       }

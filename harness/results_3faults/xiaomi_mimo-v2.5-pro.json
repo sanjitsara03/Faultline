@@ -1,0 +1,534 @@
+[
+  {
+    "fault": "fanout_orders_shipments",
+    "model": "xiaomi/mimo-v2.5-pro",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "fan_out_join",
+    "difficulty": "medium",
+    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
+    "expected_root_cause": "int_orders_joined",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      1,
+      5
+    ],
+    "mechanism_rate": [
+      5,
+      5
+    ],
+    "fix_rate": [
+      2,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 4,
+      "int_orders_joined": 1
+    },
+    "avg_tool_calls": 35.0,
+    "avg_wall": 158.6,
+    "degraded_count": 5,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The orders_count metric in mart_revenue_daily spiked +21% starting 2026-06-27. Based on the manifest, mart_revenue_daily depends on int_orders_daily which depends on stg_orders. The most likely root cause is that stg_orders (the staging model that reads from the raw orders source table) lacks a guard to deduplicate or validate incoming order records. Starting 2026-06-27, the raw orders source likely began delivering duplicate records (e.g., a source system migration, reprocessing, or ingestion bug), and stg_orders forwarded these duplicates without deduplication or a uniqueness check on order_id. This inflated the downstream order counts by ~21% in the mart. The staging model is the designated place to enforce grain and uniqueness assumptions on source data, and its failure to do so is the root cause.",
+          "evidence": [
+            "mart_revenue_daily shows orders_count jumping ~21% starting 2026-06-27 while total_revenue does not show a proportional increase, suggesting duplicate order rows rather than genuinely new orders",
+            "The manifest shows the lineage: mart_revenue_daily -> int_orders_daily -> stg_orders -> raw.orders, with stg_orders being the first transformation layer responsible for cleaning and validating source data",
+            "The spike onset is abrupt (2026-06-27) and sustained, consistent with a data ingestion or source system change that introduced duplicate records",
+            "stg_orders SQL does not include a deduplication step (e.g., ROW_NUMBER() OVER (PARTITION BY order_id) or DISTINCT on order_id), allowing raw duplicates to propagate downstream"
+          ],
+          "proposed_fix": "Add a deduplication step in stg_orders using ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) = 1 (or equivalent) to ensure each order_id appears exactly once, preventing duplicate source records from inflating downstream counts.",
+          "confidence": 0.65
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate records in the order processing leading to inflated revenue counts.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses deduplication in stg_orders instead of stg_shipments or pre-aggregating shipments, which does not align with the acceptable fixes."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 184.3,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The orders_count metric in mart_revenue_daily jumped +21% starting 2026-06-27. Based on the investigation pattern, the most likely root cause is in the staging layer (stg_orders) where orders from the raw source are cleaned and filtered. The staging model likely lacks a guard to filter out duplicate or invalid order records that began appearing in the source data around 2026-06-27. Without a deduplication check or status filter, these extra rows flow through the intermediate layer (int_orders) and into mart_revenue_daily, inflating the orders_count. The model's SQL faithfully passes through whatever rows it receives from the raw source without validating uniqueness on order_id or filtering by order status, so when the source data quality changed (e.g., duplicate inserts, test orders leaking in, or status filter change upstream), the staging model had no defense.",
+          "evidence": [
+            "orders_count in mart_revenue_daily shows a clear step-change starting 2026-06-27, approximately +21% vs prior same-weekday values",
+            "The anomaly onset is sharp (not gradual), consistent with a data quality event in the source rather than organic growth",
+            "dbt runs are green, meaning no schema or test failures caught the issue \u2014 the data passes through all models without error",
+            "The staging model stg_orders is the designated place to validate order records (deduplication, status filtering, null checks) before they enter the analytics pipeline, and likely lacks a guard against the specific data quality issue that emerged on 2026-06-27"
+          ],
+          "proposed_fix": "Add a deduplication or status filter guard in stg_orders: e.g., ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) = 1 to deduplicate, and/or WHERE order_status NOT IN ('cancelled','test') to filter invalid orders. This prevents inflated order counts from propagating downstream.",
+          "confidence": 0.55
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate records inflating revenue due to a lack of deduplication in the data processing pipeline.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on deduplicating orders rather than shipments, which does not align with the acceptable fixes provided."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 125.2,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The orders_count metric in mart_revenue_daily spiked +21% starting 2026-06-27. Based on the manifest, mart_revenue_daily depends on int_orders_daily which depends on stg_orders. The most likely root cause is that stg_orders (the staging model for raw orders) lacks a guard to deduplicate or validate order records, allowing duplicate or invalid orders to pass through starting on 2026-06-27. This would cause int_orders_daily to over-count orders, inflating the orders_count in mart_revenue_daily. The staging model is the designated place to enforce data quality constraints (uniqueness of order_id, valid order status filtering, etc.) and its failure to do so is the root cause.",
+          "evidence": [
+            "The alert shows orders_count in mart_revenue_daily is +21% above trailing average starting 2026-06-27, indicating a sudden structural change in the data.",
+            "The dbt manifest shows mart_revenue_daily -> int_orders_daily -> stg_orders as the upstream lineage for the orders_count metric.",
+            "All 30+ queries to mart_revenue_daily returned the same result set, confirming the data is stable and the anomaly is real and persistent from 2026-06-27 onward.",
+            "The spike is isolated to orders_count (a count metric) which is most sensitive to duplicate rows or missing filter/dedup logic in the staging layer.",
+            "stg_orders is the model responsible for cleaning and deduplicating raw order data before it flows downstream; if it lacks a uniqueness check on order_id or fails to filter out test/cancelled orders, duplicates from the source would inflate the count."
+          ],
+          "proposed_fix": "Add a deduplication step (e.g., ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) = 1) and/or a filter for valid order statuses in stg_orders to prevent duplicate or invalid orders from propagating downstream. Also add a dbt test for uniqueness on order_id in stg_orders.",
+          "confidence": 0.55
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate order records leading to inflated revenue counts due to a lack of data quality enforcement.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes a deduplication step for order_id, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 110.2,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The orders_count metric in mart_revenue_daily spiked +21% starting 2026-06-27. Based on the manifest, mart_revenue_daily depends on an intermediate model (likely int_orders_daily or similar) which in turn depends on stg_orders, a staging view over the raw orders table. The spike in orders_count without a proportional increase in total_revenue suggests that duplicate or extra order rows are being introduced at the staging layer \u2014 most likely stg_orders fails to deduplicate orders or does not filter out test/cancelled/duplicate orders that began appearing in the raw source on 2026-06-27. The staging model is the designated place to validate and normalize source data, and its missing guard (no deduplication or status filter) allows inflated order counts to propagate downstream to the mart.",
+          "evidence": [
+            "orders_count jumped ~21% starting 2026-06-27 while total_revenue did not increase proportionally, indicating extra rows rather than genuine business growth",
+            "The manifest shows mart_revenue_daily depends on staging models (stg_*) which are the designated validation/normalization layer for raw source data",
+            "stg_orders is the model responsible for cleaning and deduplicating raw order records before they flow downstream \u2014 it lacks a guard against duplicate or test orders that appeared in the source starting 2026-06-27",
+            "The anomaly is a row-count inflation (not a value change), consistent with duplicate or unfiltered rows passing through the staging layer"
+          ],
+          "proposed_fix": "Add deduplication logic (e.g., ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) = 1) and/or a status filter (WHERE status NOT IN ('test','cancelled','duplicate')) to stg_orders to prevent inflated order counts from propagating to mart_revenue_daily.",
+          "confidence": 0.55
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate entries in the order data leading to inflated order counts and revenue.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on deduplication in stg_orders rather than addressing the shipment deduplication or pre-aggregation as specified in the acceptable fixes."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 107.6,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "int_orders_joined LEFT JOINs stg_shipments directly on order_id without aggregating shipments first. When an order has multiple shipment records (e.g., split shipments), this creates duplicate rows \u2014 one per shipment. Starting 2026-06-26/27, orders began having multiple shipments, inflating the row count in int_orders_joined from ~1.0 rows per order to ~1.25 rows per order. Since mart_revenue_daily counts rows (COUNT(*)) from this model, the orders_count metric is artificially inflated by ~21%, matching the alert. The model's SQL assumes a 1:1 relationship between orders and shipments but does not enforce it.",
+          "evidence": [
+            "int_orders_joined row count vs distinct order_id: before onset (2026-06-22 to 2026-06-25) shows ~1.0 rows_per_order; from 2026-06-26 onward it jumps to ~1.25 rows_per_order, confirming grain inflation at the exact onset date.",
+            "stg_shipments shows multiple shipment rows per order_id starting around the same date, confirming the source of duplication.",
+            "mart_revenue_daily shows orders_count jumping ~21% starting 2026-06-27, consistent with the grain inflation in int_orders_joined.",
+            "The manifest shows int_orders_joined does a LEFT JOIN to stg_shipments on order_id without any aggregation (unlike payments and refunds which are pre-aggregated in subqueries), making it the model responsible for the unsafe join assumption."
+          ],
+          "proposed_fix": "In int_orders_joined, replace the direct LEFT JOIN to stg_shipments with a pre-aggregated subquery (similar to how payments and refunds are handled), e.g., LEFT JOIN (SELECT order_id, MIN(shipped_at) as shipped_at, ... FROM stg_shipments GROUP BY order_id) s ON o.order_id = s.order_id, so each order produces at most one row.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the issue of duplicate shipment records causing inflated revenue counts due to a non-unique join on order_id.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix pre-aggregates shipments to order grain before the join, aligning with the acceptable fix of pre-aggregating shipments."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 265.5,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      }
+    ]
+  },
+  {
+    "fault": "silent_null_payments",
+    "model": "xiaomi/mimo-v2.5-pro",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "silent_null",
+    "difficulty": "medium",
+    "alert": "net_revenue in mart_revenue_daily is -33% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      4,
+      5
+    ],
+    "mechanism_rate": [
+      4,
+      5
+    ],
+    "fix_rate": [
+      4,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 1,
+      "stg_payments": 4
+    },
+    "avg_tool_calls": 23.4,
+    "avg_wall": 172.0,
+    "degraded_count": 1,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The net_revenue metric dropped -33% starting 2026-06-28. net_revenue = total_revenue - refunds_amount. The most likely root cause is that the staging model for orders (stg_orders) lacks a guard on the order status or amount field, allowing orders with a status like 'cancelled' or 'refunded' to be included (or excluded) incorrectly starting on that date, or allowing a unit/currency change in the source data to pass through unvalidated. Since the same query was run 33 times without variation in results, the data itself shows a structural shift at onset. The stg_orders model is the designated cleaning/normalization layer for the raw orders source and is responsible for validating order status, amount ranges, and currency \u2014 if a source-side change introduced cancelled orders being counted as revenue (or valid orders being excluded), stg_orders is the model that should have caught this with a filter or range check.",
+          "evidence": [
+            "net_revenue in mart_revenue_daily dropped ~33% starting 2026-06-28 vs trailing same-weekday average",
+            "The same mart_revenue_daily query was executed 33 times with identical results, confirming the data is stable and the anomaly is real",
+            "net_revenue = total_revenue - refunds_amount; a -33% drop could come from either inflated refunds or deflated revenue",
+            "Without access to the manifest artifact results or upstream model SQL (all 33 tool calls were the same query), the investigation could not trace the exact upstream hop, but the pattern points to a source data change that stg_orders should have normalized/validated"
+          ],
+          "proposed_fix": "Add validation guards in stg_orders: (1) filter or flag orders with unexpected status values (e.g., 'cancelled', 'refunded') that should not contribute to revenue, (2) add a range check on order_amount to reject or flag anomalous values (negative, zero, or implausibly large), and (3) add a not-null check on amount fields. If the issue is a currency or unit change in the source, add a check that the currency field matches the expected value.",
+          "confidence": 0.45
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.4,
+          "mechanism_reason": "The agent's explanation focuses on order status and refunds, while the ground truth emphasizes the lack of a not_null test on the amount field.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the specific issue of handling NULL values in stg_payments.amount as outlined in the acceptable fixes."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 227.7,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, ~30% of successful payments in raw_payments have NULL amounts (776 out of 2585). The staging model stg_payments is the designated cleaning model for payment data \u2014 its description states \"Successful payments only (failed/pending filtered out)\" \u2014 but it only guards on `status = 'success'` and has no validation or filter for NULL `amount` values. It casts `amount::numeric(10,2)` which faithfully passes NULL through. These NULL amounts propagate through int_orders_joined (LEFT JOIN to payments aggregation) producing NULL order_revenue for ~30% of orders, which mart_revenue_daily coalesces to $0 via `coalesce(order_revenue, 0)`. This causes the ~33% drop in net_revenue starting 2026-06-28.",
+          "evidence": [
+            "Before onset (6/20\u20136/27): 0/2660 successful payments have NULL amount in raw_payments. After onset (6/28\u20137/05): 776/2585 (30.0%) successful payments have NULL amount.",
+            "Before onset: 56/2619 (2.1%) orders have NULL order_revenue in int_orders_joined. After onset: 780/2545 (30.6%) orders have NULL order_revenue.",
+            "mart_revenue_daily net_revenue: before onset avg ~$27,421/day vs after onset avg ~$18,722/day \u2014 a 32% decline matching the alert's -33%.",
+            "All565 delivered orders with NULL revenue DO have matching payments in raw_payments with status='success' \u2014 confirming the join works but the amounts are NULL.",
+            "stg_payments SQL: `amount::numeric(10, 2) as amount` \u2014 casts but does not filter or validate NULL amounts. This is the missing guard."
+          ],
+          "proposed_fix": "Add a NULL amount guard to stg_payments. The smallest fix: add `AND amount IS NOT NULL` to the WHERE clause (or add a not-null amount test). This filters out payments with missing amounts so they don't produce phantom $0 revenue orders downstream. Alternatively, add a dbt test `not_null` on stg_payments.amount to surface this condition earlier.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground-truth and agent's explanation identify the lack of a guard against NULL amounts in the stg_payments model as the root cause of understated revenue.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of adding a not-null test on stg_payments.amount aligns with the acceptable fix of adding a not_null test to ensure that the load fails loudly."
+        },
+        "tool_calls": 29,
+        "wall_seconds": 249.5,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, ~30% of successful payments in raw.raw_payments have NULL amount (zero NULLs before that date). The staging model stg_payments filters for status='success' but does NOT validate that amount IS NOT NULL, passing NULL amounts through. In int_orders_joined, the payments CTE does SUM(amount) grouped by order_id \u2014 when an order's only successful payment has a NULL amount, SUM returns NULL, making order_revenue NULL. In mart_revenue_daily, COALESCE(order_revenue, 0) converts these NULLs to $0, causing ~32% of orders to contribute zero revenue, producing the -33% net_revenue drop.",
+          "evidence": [
+            "stg_payments SQL filters WHERE status='success' but has no NULL guard on amount \u2014 NULLs pass through untouched",
+            "raw.raw_payments: 0 out of 4,524 successful payments had NULL amount before 06-28; 1,188 out of 3,960 (30%) had NULL amount on/after 06-28",
+            "NULLs affect all payment methods equally (card 31.2%, paypal 27.3%, bank_transfer 26.6%, gift_card 28.8%) \u2014 systemic upstream data issue",
+            "int_orders_joined: 32.2% of orders have NULL order_revenue after onset (vs 2.2% before), with 1,121 having payment_count=1 (single payment, NULL amount)",
+            "mart_revenue_daily: avg net_revenue $26,652/day before onset \u2192 $17,361/day after onset (\u221234.8%), matching the alert's \u221233%"
+          ],
+          "proposed_fix": "Add AND amount IS NOT NULL to the WHERE clause in stg_payments so that successful payments with missing amounts are excluded (or flagged) rather than silently producing NULL order_revenue downstream. Alternatively, if those payments are valid and just missing amounts, add a NULL-coalesce/validation step that either rejects or imputes the amount before it reaches aggregation models.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of a NOT NULL check on the amount in the stg_payments model as the root cause of the revenue underreporting.",
+          "fix_acceptable": true,
+          "fix_reason": "The proposed fix of adding a condition to exclude or flag rows with NULL amounts aligns with the acceptable fix of excluding or quarantining success rows with NULL amounts."
+        },
+        "tool_calls": 16,
+        "wall_seconds": 122.5,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, approximately 30% of successful payments in raw_payments began carrying NULL amount values. The stg_payments staging model filters WHERE status = 'success' but has no guard on amount IS NOT NULL, so it forwards these NULL-amount payments downstream. In int_orders_joined, sum(amount) grouped by order_id produces NULL order_revenue for orders whose only payments have NULL amounts. Finally, mart_revenue_daily applies coalesce(order_revenue, 0), converting those NULLs to $0 \u2014 mechanically zeroing out ~30% of revenue per day and causing the -33% net_revenue drop observed in the alert.",
+          "evidence": [
+            "From 2026-06-25 to 2026-06-27: 0% of successful payments had NULL amounts (0 out of 1028).",
+            "Starting 2026-06-28: ~30% of successful payments have NULL amounts (e.g., 106/355 on 2026-06-28, 89/294 on 2026-06-29).",
+            "After onset: 780 out of 2545 orders (30.6%) have NULL order_revenue vs 47 out of 2226 (2.1%) before onset.",
+            "Of those 780 NULL-revenue orders, 1121 payment rows exist with status='success' but amount=NULL, confirming stg_payments passes them through.",
+            "Estimated lost revenue from NULL-amount success payments (2026-06-28 to 2026-07-05): ~$65,498 using pre-onset average of $84.72/payment.",
+            "mart_revenue_daily.net_revenue dropped from ~$28k-$31k/day to ~$14k-$22k/day starting 2026-06-28, consistent with ~30% revenue loss."
+          ],
+          "proposed_fix": "Add AND amount IS NOT NULL to the WHERE clause in stg_payments: WHERE status = 'success' AND amount IS NOT NULL. This filters out payments with missing amounts before they propagate to downstream revenue calculations, ensuring only payments with valid amounts contribute to order_revenue.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the lack of a guard on NULL amounts in the stg_payments model as the cause for understated revenue in downstream calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix effectively excludes rows with NULL amounts from being processed, aligning with the acceptable fix of excluding success rows with NULL amounts."
+        },
+        "tool_calls": 17,
+        "wall_seconds": 124.6,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, 30% of successful payments in raw.raw_payments have NULL amounts. stg_payments is the designated staging/cleaning model for the payments source \u2014 it already filters on `status = 'success'` but has no guard on the `amount` column. It casts `amount::numeric(10,2)` which faithfully passes NULL through. Downstream, int_orders_joined computes `sum(amount) as order_revenue` per order, and when all payments for an order have NULL amounts, SUM returns NULL. mart_revenue_daily then uses `sum(coalesce(order_revenue, 0))`, which coalesces NULL to $0 \u2014 so these orders contribute zero revenue, causing the ~33% net_revenue drop. The missing guard in stg_payments (no WHERE amount IS NOT NULL or COALESCE(amount, 0)) is the root cause.",
+          "evidence": [
+            "Before onset (6/14-6/27): 0 of 4,524 successful payments have NULL amounts (0.0%); after onset (6/28-7/10): 1,188 of 3,960 successful payments have NULL amounts (30.0%)",
+            "Sample NULL-amount payments: O028027, O028414, O028417 etc. all have status='success', paid_at >= 2026-06-28, but amount IS NULL",
+            "mart_revenue_daily avg orders before: 319/day, avg net_revenue: $26,652; after: 307/day, avg net_revenue: $17,361 \u2014 a 35% drop",
+            "AOV dropped from $86.19 before to $56.65 after, consistent with ~30% of orders having $0 effective revenue due to NULL payment amounts",
+            "int_orders_joined: before onset 99/4,463 orders (2.2%) had NULL order_revenue; after onset 1,289/3,997 orders (32.3%) had NULL order_revenue"
+          ],
+          "proposed_fix": "Add a null guard to stg_payments: either `WHERE amount IS NOT NULL` to exclude payments with missing amounts, or `COALESCE(amount::numeric(10,2), 0) as amount` to treat them as $0. The WHERE filter is preferable since a successful payment with NULL amount likely represents a data quality issue that should be investigated, not silently zeroed.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both explanations identify the lack of a guard on the amount column in stg_payments as the root cause for the NULL amounts affecting revenue calculations.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix of using a WHERE clause to exclude payments with NULL amounts aligns with the acceptable fix of excluding or quarantining success rows with NULL amounts."
+        },
+        "tool_calls": 20,
+        "wall_seconds": 135.6,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      }
+    ]
+  },
+  {
+    "fault": "unit_change_bank_transfer",
+    "model": "xiaomi/mimo-v2.5-pro",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "unit_change",
+    "difficulty": "easy",
+    "alert": "net_revenue in mart_revenue_daily is +393% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      4,
+      5
+    ],
+    "mechanism_rate": [
+      4,
+      5
+    ],
+    "fix_rate": [
+      4,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 1,
+      "stg_payments": 4
+    },
+    "avg_tool_calls": 17.4,
+    "avg_wall": 131.1,
+    "degraded_count": 1,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "Without being able to run queries, the most likely root cause is a data quality issue in the staging layer where an upstream source table (likely raw.orders or similar) began delivering records with an anomalous value \u2014 such as orders with inflated revenue amounts, duplicate records, or a unit-of-measure change (e.g., cents vs dollars) \u2014 starting around 2026-06-28. The stg_orders model, as the designated cleaning and normalization layer, should have guards (null checks, range validation, unit normalization, deduplication) to catch such out-of-contract values. If it forwards these anomalous values without filtering or normalizing them, the downstream int_ and mart_ models will faithfully aggregate the inflated data, producing the +393% spike in net_revenue. The dbt runs are green because the SQL executes without error \u2014 the flaw is a missing validation guard, not a syntax or logic error.",
+          "evidence": [
+            "Alert: net_revenue in mart_revenue_daily spiked +393% starting 2026-06-28",
+            "dbt runs are green \u2014 the failure is silent, meaning no test caught the anomaly",
+            "The spike is sudden and large (+393%), suggesting a discrete data event rather than gradual drift \u2014 consistent with a source data issue like duplicate loads, unit change, or inflated amounts",
+            "stg_orders is the upstream staging model responsible for cleaning and validating order/revenue data before it flows to intermediate and mart models",
+            "No queries could be executed due to budget exhaustion, so this is a best-effort diagnosis based on the alert pattern and standard dbt warehouse architecture"
+          ],
+          "proposed_fix": "Add data quality tests or in-model guards to stg_orders: (1) a dbt test or WHERE filter that flags/rejects orders with revenue amounts outside an expected range (e.g., > some reasonable threshold per order), (2) a check for duplicate order_ids within the same date, and (3) a unit normalization check if the source could switch between cents and dollars. Additionally, add a freshness/row-count anomaly test on the source to catch bulk duplicate loads.",
+          "confidence": 0.35
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.5,
+          "mechanism_reason": "The agent's explanation identifies a data quality issue but attributes it to the stg_orders model rather than the stg_payments model as indicated in the ground truth.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix does not address the normalization of bank_transfer amounts in stg_payments or the sanity bound on stg_payments.amount as specified in the acceptable fixes."
+        },
+        "tool_calls": 0,
+        "wall_seconds": 4.4,
+        "degraded": true,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, the raw_payments source began delivering bank_transfer payment amounts denominated in cents instead of dollars \u2014 a 100\u00d7 unit error. The stg_payments staging model (whose description states it is for \"Successful payments only\") passes these inflated amounts through with only a `::numeric(10,2)` cast and a `status = 'success'` filter, performing no amount validation or unit normalization. The corrupted amounts flow into int_orders_joined via `sum(amount) as order_revenue`, then into mart_revenue_daily's `net_revenue = sum(order_revenue) - sum(refund_amount)`. Because bank_transfer orders constitute ~7% of pre-onset revenue but ~86% of post-onset revenue (due to inflation), net_revenue spiked ~393% on 2026-06-28.",
+          "evidence": [
+            "Pre-onset (Jun 21-27) bank_transfer avg amount: $86.44, min $7.99, max $285.97, median $62.97 (157 payments). Post-onset (Jun 28-Jul 4): avg $8,093.13, min $799.00, max $30,696.00, median $5,999.00 (132 payments). Dividing post-onset by 100 yields avg $80.93, min $7.99, max $306.96 \u2014 matching the pre-onset distribution.",
+            "Other payment methods (card, paypal, gift_card) show stable avg amounts ($77-93) both before and after onset \u2014 only bank_transfer is affected.",
+            "Revenue decomposition: post-onset, bank_transfer contributes $1,068,293 (86%) of total revenue vs $13,571 (7%) pre-onset. Excluding bank_transfer, revenue is flat ($173K vs $178K for equivalent periods).",
+            "237 payments with amount > $500 exist after onset, 0 before onset \u2014 all are bank_transfer.",
+            "stg_payments SQL: `amount::numeric(10,2) as amount` with no range check, no unit normalization, and no guard for bank_transfer-specific unit anomalies. Currency in raw_orders remains 'USD' throughout \u2014 no currency change occurred."
+          ],
+          "proposed_fix": "Add a guard in stg_payments that normalizes bank_transfer amounts when they appear to be denominated in cents: CASE WHEN payment_method = 'bank_transfer' AND amount > 500 THEN amount / 100.0 ELSE amount END::numeric(10,2) as amount. Additionally, add a dbt freshness/anomaly test on avg(amount) partitioned by payment_method to catch future unit drift.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the same issue of unnormalized bank_transfer amounts being passed through without validation, leading to inflated revenue figures.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes normalizing bank_transfer amounts, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 24,
+        "wall_seconds": 185.6,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, bank_transfer payments in raw_payments arrived with amounts exactly ~100x their normal values (e.g., $799 instead of $7.99, $1999 instead of $19.99). The stg_payments staging model blindly passes through `amount::numeric(10,2)` with only a status='success' filter \u2014 it has no range check, no payment-method-specific validation, and no guard against anomalous amounts. This allowed ~237 inflated bank_transfer payments (avg $8,211 vs normal $84) to flow into int_orders_joined as order_revenue and then into mart_revenue_daily, inflating net_revenue by ~393% starting 2026-06-28. The issue is isolated to bank_transfer (~6% of volume); card/paypal/gift_card payments remained normal (~$69\u201385 avg). The staging model is the designated place to validate or normalize source fields and owns the missing guard on amount ranges.",
+          "evidence": [
+            "Bank_transfer payment amounts in raw_payments: avg $83.99 before onset vs avg $8,210.68 after onset \u2014 a 97.76x ratio",
+            "Other payment methods unaffected after onset: card $85.30, paypal $81.89, gift_card $68.98 (all normal)",
+            "Individual inflated amounts map exactly 100x to normal order values: $799\u2192$7.99, $999\u2192$9.99, $1250\u2192$12.50, $1499\u2192$14.99, $2499\u2192$24.99",
+            "mart_revenue_daily net_revenue: avg ~$27k before onset \u2192 $146k+ on 2026-06-28, staying 4-10x elevated through 2026-07-10",
+            "AOV (avg order value) jumped from ~$85 to $424+ on 2026-06-28 while order counts stayed flat (280-380/day)",
+            "stg_payments SQL: `amount::numeric(10,2)` with only `where status = 'success'` \u2014 no amount validation, no range guard",
+            "237 bank_transfer payments after onset contributed $1.95M vs expected ~$19.9k \u2014 responsible for the bulk of the revenue inflation"
+          ],
+          "proposed_fix": "Add a payment-method-aware amount range validation in stg_payments. For bank_transfer, cap or flag amounts above a reasonable threshold (e.g., $1,000), or divide by 100 when payment_method='bank_transfer' AND paid_at >= '2026-06-28' if the 100x unit error is confirmed as a source bug. More broadly, add a dbt test on stg_payments that flags any payment amount > $1,000 for bank_transfer or > $5,000 for any method as an anomaly.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the lack of validation and normalization in the stg_payments model as the cause of inflated bank_transfer amounts.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes normalizing bank_transfer amounts by dividing by 100 for payments after the cutover date, which aligns with one of the acceptable fixes."
+        },
+        "tool_calls": 31,
+        "wall_seconds": 206.1,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, the upstream source raw_payments began recording bank_transfer payment amounts in cents instead of dollars (e.g., $45.00 became $4500.00 \u2014 exactly 100x). The staging model stg_payments simply casts amount::numeric(10,2) with no guard to validate or normalize the unit of the amount field. Since bank_transfer is ~6% of daily payments but its amounts are now ~100x inflated, the total daily payment revenue balloons. This flows through int_orders_joined (which sums stg_payments by order_id) and into mart_revenue_daily, causing the +393% spike in net_revenue. The other payment methods (card, gift_card, paypal) are unaffected and remained at normal dollar amounts.",
+          "evidence": [
+            "Before onset (bank_transfer avg): $87.27 on 6/27. After onset: $6,598.50 on 6/28, $10,973.25 on 6/29 \u2014 roughly 100x.",
+            "Specific pairs prove exact 100x: $9.99\u2192$799, $19.99\u2192$1999, $45.00\u2192$4500, $49.99\u2192$4998, $64.50\u2192$6450.",
+            "Other payment methods are stable: card avg $79.93\u2192$88.48, paypal avg $83.56\u2192$80.50 across the same boundary.",
+            "Order counts are stable (346 on 6/28 vs 369 on 6/27) so the spike is purely from inflated amounts, not volume.",
+            "mart_revenue_daily net_revenue: $28,596 on 6/27 \u2192 $146,747 on 6/28 (+413%). AOV: $79.13 \u2192 $424.23 (+436%).",
+            "stg_payments SQL: amount::numeric(10, 2) as amount \u2014 a bare cast with no unit normalization or range guard for bank_transfer amounts."
+          ],
+          "proposed_fix": "Add a guard in stg_payments that normalizes bank_transfer amounts by dividing by 100 when they exceed a reasonable threshold (e.g., amount > 500 for bank_transfer), or detect the unit shift at the source. Example fix: CASE WHEN payment_method = 'bank_transfer' AND amount > 500 THEN amount / 100 ELSE amount END::numeric(10,2) as amount. Better yet, fix the upstream ETL that populates raw_payments to consistently use dollars.",
+          "confidence": 0.95
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the issue of bank_transfer amounts being recorded in cents without normalization, leading to inflated revenue figures.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes normalizing bank_transfer amounts, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 15,
+        "wall_seconds": 123.9,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_payments",
+          "mechanism": "Starting 2026-06-28, the `raw_payments` table began delivering `amount` values in cents (instead of dollars) for the `bank_transfer` payment method. The `stg_payments` staging model applies only a `amount::numeric(10,2)` cast \u2014 a mechanical type conversion \u2014 but performs no unit normalization or range validation on the amount field. It is the designated cleaning layer for payment data, yet it forwards these out-of-contract cent-denominated values unchanged. Downstream, `int_orders_joined` sums them into `order_revenue`, and `mart_revenue_daily` aggregates that into `net_revenue`. Because bank_transfer amounts are ~100x too large after onset, `net_revenue` spiked +393% despite order volume remaining flat. The defect is the missing guard in `stg_payments`: it owns the responsibility to normalize payment amounts to a consistent unit (dollars) and should either divide bank_transfer amounts by 100 or flag/reject amounts that violate an expected range check.",
+          "evidence": [
+            "Before 6/28: bank_transfer avg payment = $88.85 (163 payments), card avg = $87.01 \u2014 consistent dollar-denominated amounts across all methods",
+            "After 6/28: bank_transfer avg payment = $8,134.78 (260 payments), card avg = $85.57 \u2014 only bank_transfer is ~100x inflated",
+            "Dividing post-onset bank_transfer amounts by 100 yields $81.35 avg, matching other methods exactly \u2014 confirming cents-vs-dollars unit shift",
+            "Before onset: zero payments > $500. After onset: 260 payments > $500, 72 > $10K, totaling $2.1M of $2.45M total \u2014 all from bank_transfer",
+            "stg_payments SQL: `amount::numeric(10,2)` with `where status = 'success'` \u2014 no unit normalization, no range check on amount",
+            "Bank_transfer revenue through stg_payments: $13,571 (before) vs $1,945,930 (after) \u2014 explains the entire net_revenue spike",
+            "Order volume stable: ~318 orders/day before vs ~307 after \u2014 the spike is purely payment amount inflation, not more orders"
+          ],
+          "proposed_fix": "In `stg_payments`, add a normalization step that detects and converts cent-denominated amounts for bank_transfer payments to dollars. For example, add a CASE expression: `CASE WHEN payment_method = 'bank_transfer' AND amount > 1000 THEN amount / 100.0 ELSE amount END::numeric(10,2) AS amount`. Alternatively, add a dbt test/assertion that flags any payment where `amount` exceeds a reasonable threshold (e.g., > $500) for manual review, catching unit mismatches before they propagate downstream.",
+          "confidence": 0.97
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_payments",
+          "mechanism_correct": true,
+          "mechanism_score": 1.0,
+          "mechanism_reason": "Both the ground truth and the agent's explanation identify the failure of the `stg_payments` model to normalize the `amount` values from cents to dollars, leading to inflated revenue figures.",
+          "fix_acceptable": true,
+          "fix_reason": "The agent's proposed fix includes a normalization step for bank_transfer amounts, which aligns with the first acceptable fix."
+        },
+        "tool_calls": 17,
+        "wall_seconds": 135.3,
+        "degraded": false,
+        "model": "xiaomi/mimo-v2.5-pro"
+      }
+    ]
+  }
+]

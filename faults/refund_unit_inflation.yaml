@@ -1,0 +1,39 @@
+id: refund_unit_inflation
+category: unit_change
+description: >
+  On 2026-06-28 the refund service starts reporting amounts in a smaller
+  currency unit: every refund from onset arrives 40x. stg_refunds does no
+  normalization and nothing bounds refund_amount against order_revenue in the
+  revenue path, so net_revenue craters on the order-dates of refunded orders.
+injection:
+  type: data_mutation
+  target: raw_refunds
+  action: multiply_column
+  params:
+    key_column: refund_id
+    column: amount
+    factor: 40
+    fraction: 1.0
+    filter: "refunded_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.net_revenue
+  # Measured on the live seed (deterministic): -5% to -134% (net_revenue goes
+  # negative on the worst days), smeared across ORDER dates 06-09..07-03 because
+  # refunds lag orders: the mutation hits refunds refunded_at >= 06-28, which
+  # belong to orders placed up to ~3 weeks earlier. Detector: net_revenue -88%,
+  # peak_z=10.1, onset 2026-06-10 — deliberately EARLIER than the mutation date;
+  # the onset-vs-mutation mismatch is part of what makes this fault hard.
+  expected_deviation: "-5-134%"
+  onset: "2026-06-10"
+ground_truth:
+  root_cause_model: stg_refunds
+  root_cause_mechanism: >
+    Refund amounts arrive 40x from the onset date; stg_refunds passes amount
+    through with no unit normalization and no sanity bound, so inflated
+    refund_amount lands on each refunded order and mart_revenue_daily's
+    net_revenue (revenue minus refunds) collapses on affected order dates.
+  acceptable_fixes:
+    - normalize refund amounts (divide by the unit factor) in stg_refunds from the cutover date
+    - add a sanity bound on stg_refunds.amount (e.g. refund cannot exceed order revenue) to catch unit drift
+difficulty: hard
+

@@ -1,8 +1,8 @@
 """Faultline MCP server — the investigating agent's ONLY interface to the warehouse.
 
-stdio transport, three tools (FAULTLINE_SPEC.md §2.5): run_query, get_dbt_artifacts,
-inspect_schema. Deployed to MintMCP's hosted infra, so this file is self-contained:
-DATABASE_URL arrives as an env var there; the .env fallback is local dev only.
+Three tools: run_query, get_dbt_artifacts, inspect_schema. Runs over stdio locally
+and streamable HTTP in the hosted container, and is self-contained either way:
+DATABASE_URL arrives as an env var when deployed; the .env fallback is local dev only.
 
 All tools return a JSON string. Errors come back as {"error": "..."} tool output —
 never a crash — because the agent iterates on failed SQL.

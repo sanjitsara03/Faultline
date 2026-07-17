@@ -29,7 +29,7 @@ from mcp_client import _env, M2MToken, REPO_ROOT
 
 load_dotenv(REPO_ROOT / ".env")
 
-DEFAULT_MODEL = "minimax/minimax-m3"
+DEFAULT_MODEL = "openai/gpt-5.6-luna"
 MODEL = os.environ.get("FAULTLINE_MODEL", DEFAULT_MODEL)
 MAX_TOOL_CALLS = 30  # bounds cost; also an eval metric ("tool calls per investigation")
 

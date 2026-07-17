@@ -1,0 +1,494 @@
+[
+  {
+    "fault": "fanout_orders_shipments",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "fan_out_join",
+    "difficulty": "medium",
+    "alert": "orders_count in mart_revenue_daily is +21% vs the same-weekday trailing average, starting 2026-06-27",
+    "expected_root_cause": "int_orders_joined",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      5,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      0,
+      5
+    ],
+    "root_cause_answers": {
+      "int_orders_joined": 5
+    },
+    "avg_tool_calls": 6.0,
+    "avg_wall": 18.8,
+    "degraded_count": 0,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is performing a LEFT JOIN from stg_orders to stg_payments. The stg_payments model filters for successful payments only. If an order has no successful payments, it will still be included in int_orders_joined due to the LEFT JOIN, but its order_revenue will be NULL. The mart_revenue_daily model then uses COALESCE(order_revenue, 0) to treat these NULLs as 0, effectively counting orders with no successful payments as having 0 revenue. However, the orders_count metric in mart_revenue_daily simply counts all orders from int_orders_joined, regardless of whether they have a successful payment. The increase in orders_count in mart_revenue_daily without a corresponding increase in revenue suggests that a growing number of orders are being created without successful payments, and these are being incorrectly counted as valid orders in the orders_count metric.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily reported 364 orders, while stg_orders reported 339 orders. This discrepancy of 25 orders indicates that int_orders_joined is introducing additional rows that are not present in stg_orders. This pattern continues for subsequent days, with mart_revenue_daily consistently showing a higher order count than stg_orders.",
+            "The raw_code for int_orders_joined shows a LEFT JOIN from orders (stg_orders) to payments (stg_payments). This means that if an order exists in stg_orders but has no matching successful payment in stg_payments, it will still be included in int_orders_joined, but its payment-related fields (like order_revenue) will be NULL.",
+            "The raw_code for mart_revenue_daily shows `count(*) as orders_count` which counts all rows from int_orders_joined, including those with NULL `order_revenue` due to no successful payments."
+          ],
+          "proposed_fix": "Modify the `int_orders_joined` model to only include orders that have a successful payment. This can be achieved by changing the `LEFT JOIN` to `INNER JOIN` between `orders` and `payments`, or by adding a `WHERE payments.order_id IS NOT NULL` clause.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.2,
+          "mechanism_reason": "The agent's explanation focuses on the treatment of NULL revenues due to unsuccessful payments, while the ground truth addresses the issue of duplicate shipments causing revenue to be counted multiple times.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on filtering orders based on payment status rather than addressing the issue of deduplication or pre-aggregation of shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 18.2,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is performing a LEFT JOIN from stg_orders to stg_payments. The stg_payments model filters for successful payments only. If an order has no successful payments, it will still be included in int_orders_joined due to the LEFT JOIN, but its order_revenue will be NULL. The mart_revenue_daily model then uses COALESCE(order_revenue, 0) to treat these NULLs as 0, effectively counting orders with no successful payments as having 0 revenue. However, the orders_count metric in mart_revenue_daily simply counts all orders from int_orders_joined, regardless of whether they have a successful payment. The increase in orders_count in mart_revenue_daily without a corresponding increase in revenue suggests that a growing number of orders are being created without successful payments, and these are being incorrectly counted as valid orders in the orders_count metric.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily reported 364 orders, while stg_orders reported 339 orders. This discrepancy of 25 orders indicates that int_orders_joined is introducing additional rows that are not present in stg_orders. This pattern continues for subsequent days, with mart_revenue_daily consistently showing a higher order count than stg_orders.",
+            "The raw_code for int_orders_joined shows a LEFT JOIN from orders (stg_orders) to payments (stg_payments). This means that if an order exists in stg_orders but has no matching successful payment in stg_payments, it will still be included in int_orders_joined, but its payment-related fields (like order_revenue) will be NULL.",
+            "The raw_code for mart_revenue_daily shows `count(*) as orders_count` which counts all rows from int_orders_joined, including those with NULL `order_revenue` due to no successful payments."
+          ],
+          "proposed_fix": "Modify the `int_orders_joined` model to only include orders that have a successful payment. This can be achieved by changing the `LEFT JOIN` to `INNER JOIN` between `orders` and `payments`, or by adding a `WHERE payments.order_id IS NOT NULL` clause.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the treatment of NULL revenues due to unsuccessful payments, while the ground truth addresses the issue of duplicate shipment rows causing revenue to be counted multiple times.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on filtering orders based on payment status rather than addressing the issue of deduplication or pre-aggregation of shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 18.3,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is performing a LEFT JOIN from stg_orders to stg_payments. The stg_payments model filters for successful payments only. If an order has no successful payments, it will still be included in int_orders_joined due to the LEFT JOIN, but its order_revenue will be NULL. The mart_revenue_daily model then uses COALESCE(order_revenue, 0) to treat these NULLs as 0, effectively counting orders with no successful payments as having 0 revenue. However, the orders_count metric in mart_revenue_daily simply counts all orders from int_orders_joined, regardless of whether they have a successful payment. The increase in orders_count in mart_revenue_daily without a corresponding increase in revenue suggests that a growing number of orders are being created without successful payments, and these are being incorrectly counted as valid orders in the orders_count metric.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily reported 364 orders, while stg_orders reported 339 orders. This discrepancy of 25 orders indicates that int_orders_joined is introducing additional rows that are not present in stg_orders. This pattern continues for subsequent days, with mart_revenue_daily consistently showing a higher order count than stg_orders.",
+            "The raw_code for int_orders_joined shows a LEFT JOIN from orders (stg_orders) to payments (stg_payments). This means that if an order exists in stg_orders but has no matching successful payment in stg_payments, it will still be included in int_orders_joined, but its payment-related fields (like order_revenue) will be NULL.",
+            "The raw_code for mart_revenue_daily shows `count(*) as orders_count` which counts all rows from int_orders_joined, including those with NULL `order_revenue` due to no successful payments."
+          ],
+          "proposed_fix": "Modify the `int_orders_joined` model to only include orders that have a successful payment. This can be achieved by changing the `LEFT JOIN` to `INNER JOIN` between `orders` and `payments`, or by adding a `WHERE payments.order_id IS NOT NULL` clause.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.2,
+          "mechanism_reason": "The agent's explanation focuses on the treatment of NULL revenues due to unsuccessful payments, while the ground truth addresses the issue of duplicate shipments causing revenue to be counted multiple times.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on filtering orders based on payment status rather than addressing the deduplication or pre-aggregation of shipments as specified in the acceptable fixes."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 18.1,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is performing a LEFT JOIN from stg_orders to stg_payments. The stg_payments model filters for successful payments only. If an order has no successful payments, it will still be included in int_orders_joined due to the LEFT JOIN, but its order_revenue will be NULL. The mart_revenue_daily model then uses COALESCE(order_revenue, 0) to treat these NULLs as 0, effectively counting orders with no successful payments as having 0 revenue. However, the orders_count metric in mart_revenue_daily simply counts all orders from int_orders_joined, regardless of whether they have a successful payment. The increase in orders_count in mart_revenue_daily without a corresponding increase in revenue suggests that a growing number of orders are being created without successful payments, and these are being incorrectly counted as valid orders in the orders_count metric.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily reported 364 orders, while stg_orders reported 339 orders. This discrepancy of 25 orders indicates that int_orders_joined is introducing additional rows that are not present in stg_orders. This pattern continues for subsequent days, with mart_revenue_daily consistently showing a higher order count than stg_orders.",
+            "The raw_code for int_orders_joined shows a LEFT JOIN from orders (stg_orders) to payments (stg_payments). This means that if an order exists in stg_orders but has no matching successful payment in stg_payments, it will still be included in int_orders_joined, but its payment-related fields (like order_revenue) will be NULL.",
+            "The raw_code for mart_revenue_daily shows `count(*) as orders_count` which counts all rows from int_orders_joined, including those with NULL `order_revenue` due to no successful payments."
+          ],
+          "proposed_fix": "Modify the `int_orders_joined` model to only include orders that have a successful payment. This can be achieved by changing the `LEFT JOIN` to `INNER JOIN` between `orders` and `payments`, or by adding a `WHERE payments.order_id IS NOT NULL` clause.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on the treatment of NULL revenues due to unsuccessful payments, while the ground truth identifies issues with duplicate shipments causing revenue to be counted multiple times.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on filtering orders based on payment status rather than addressing the issue of deduplication or pre-aggregation of shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 19.1,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "int_orders_joined",
+          "mechanism": "The int_orders_joined model is performing a LEFT JOIN from stg_orders to stg_payments. The stg_payments model filters for successful payments only. If an order has no successful payments, it will still be included in int_orders_joined due to the LEFT JOIN, but its order_revenue will be NULL. The mart_revenue_daily model then uses COALESCE(order_revenue, 0) to treat these NULLs as 0, effectively counting orders with no successful payments as having 0 revenue. However, the orders_count metric in mart_revenue_daily simply counts all orders from int_orders_joined, regardless of whether they have a successful payment. The increase in orders_count in mart_revenue_daily without a corresponding increase in revenue suggests that a growing number of orders are being created without successful payments, and these are being incorrectly counted as valid orders in the orders_count metric.",
+          "evidence": [
+            "On 2026-06-26, mart_revenue_daily reported 364 orders, while stg_orders reported 339 orders. This discrepancy of 25 orders indicates that int_orders_joined is introducing additional rows that are not present in stg_orders. This pattern continues for subsequent days, with mart_revenue_daily consistently showing a higher order count than stg_orders.",
+            "The raw_code for int_orders_joined shows a LEFT JOIN from orders (stg_orders) to payments (stg_payments). This means that if an order exists in stg_orders but has no matching successful payment in stg_payments, it will still be included in int_orders_joined, but its payment-related fields (like order_revenue) will be NULL.",
+            "The raw_code for mart_revenue_daily shows `count(*) as orders_count` which counts all rows from int_orders_joined, including those with NULL `order_revenue` due to no successful payments."
+          ],
+          "proposed_fix": "Modify the `int_orders_joined` model to only include orders that have a successful payment. This can be achieved by changing the `LEFT JOIN` to `INNER JOIN` between `orders` and `payments`, or by adding a `WHERE payments.order_id IS NOT NULL` clause.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": true,
+          "root_cause_expected": "int_orders_joined",
+          "root_cause_got": "int_orders_joined",
+          "mechanism_correct": false,
+          "mechanism_score": 0.3,
+          "mechanism_reason": "The agent's explanation focuses on the treatment of NULL revenues due to unsuccessful payments, while the ground truth addresses the issue of duplicate shipments causing revenue to be counted multiple times.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix focuses on filtering orders based on payment status rather than addressing the issue of deduplication or pre-aggregation of shipments."
+        },
+        "tool_calls": 6,
+        "wall_seconds": 20.5,
+        "degraded": false,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  },
+  {
+    "fault": "silent_null_payments",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "silent_null",
+    "difficulty": "medium",
+    "alert": "net_revenue in mart_revenue_daily is -33% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      0,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      0,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 5
+    },
+    "avg_tool_calls": 35.0,
+    "avg_wall": 135.1,
+    "degraded_count": 5,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, which causes `net_revenue` to be inflated due to multiple joins with `stg_payments` and `stg_refunds`. The `orders_count` metric is also inflated, indicating a problem with the grain of the `stg_orders` model itself. This issue started around 2026-06-28, leading to an artificial increase in reported revenue.",
+          "evidence": [
+            "On 2026-06-27, orders_count was 100, total_revenue was 1000, refunds_amount was 100, and net_revenue was 900. On 2026-06-28, orders_count jumped to 200, total_revenue to 2000, refunds_amount to 200, and net_revenue to 1800. This 100% increase across all metrics suggests a duplication of orders rather than a genuine increase in business.",
+            "The `orders_count` metric, which should represent unique orders, is doubling after the onset date, indicating that the `stg_orders` model is generating duplicate `order_id`s."
+          ],
+          "proposed_fix": "Add a `DISTINCT` clause on `order_id` to the `stg_orders` model to ensure each order is counted only once. Alternatively, investigate the upstream source of `stg_orders` to identify and resolve the root cause of duplicate order entries.",
+          "confidence": 0.9
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate `order_id` values inflating revenue, while the ground truth identifies NULL amounts in successful rows affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The proposed fix addresses duplicate entries rather than handling NULL values in the amount field as specified in the acceptable fixes."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 142.6,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, which causes an inflated count of total orders. This inflation then propagates downstream to `mart_revenue_daily`, leading to an incorrect `net_revenue` calculation. The duplicate `order_id` values are likely due to an issue in the source data or the `stg_orders` model itself not properly handling potential duplicates during its staging process.",
+          "evidence": [
+            "On 2026-06-28, `stg_orders` shows 100 total orders, but only 50 paid orders and 0 refunded orders. This implies that 50 orders are neither paid nor refunded, which is an unusual pattern compared to previous days where `total_orders` was closer to `paid_orders`.",
+            "The `total_orders` count in `stg_orders` is significantly higher than `paid_orders` and `refunded_orders` combined, especially after the onset date of 2026-06-28. For example, on 2026-06-28, `total_orders` is 100, while `paid_orders` is 50 and `refunded_orders` is 0. This suggests that there are orders being counted multiple times in `stg_orders`.",
+            "The repeated queries for `stg_orders` indicate a consistent pattern of `total_orders` being higher than expected, which points to a data quality issue within `stg_orders` itself."
+          ],
+          "proposed_fix": "Add a `DISTINCT` clause on `order_id` in the `stg_orders` model to ensure each order is counted only once. Alternatively, investigate the source data feeding `stg_orders` for duplicate `order_id` values and address the root cause there.",
+          "confidence": 0.7
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate `order_id` values causing inflated counts, while the ground truth identifies NULL amounts affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order counting rather than handling NULL values in stg_payments.amount as required."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 146.6,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, which causes an inflated count of total orders. This inflation then propagates downstream to `mart_revenue_daily`, leading to an incorrect `net_revenue` calculation. The duplicate `order_id` values are likely due to an issue in the source data or the `stg_orders` model itself not properly handling potential duplicates during its staging process.",
+          "evidence": [
+            "On 2026-06-28, `stg_orders` shows 100 total orders, but only 50 paid orders and 0 refunded orders. This implies that 50 orders are neither paid nor refunded, which is an unusual pattern compared to previous days where `total_orders` was closer to `paid_orders`.",
+            "The `total_orders` count in `stg_orders` is significantly higher than `paid_orders` and `refunded_orders` combined, especially after the onset date of 2026-06-28. For example, on 2026-06-28, `total_orders` is 100, while `paid_orders` is 50 and `refunded_orders` is 0. This suggests that there are orders being counted multiple times in `stg_orders`.",
+            "The repeated queries for `stg_orders` indicate a consistent pattern of `total_orders` being higher than expected, which points to a data quality issue within `stg_orders` itself."
+          ],
+          "proposed_fix": "Add a `DISTINCT` clause on `order_id` in the `stg_orders` model to ensure each order is counted only once. Alternatively, investigate the source data feeding `stg_orders` for duplicate `order_id` values and address the root cause there.",
+          "confidence": 0.7
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate `order_id` values causing inflated counts, while the ground truth identifies NULL amounts affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order counting rather than handling NULL values in stg_payments.amount."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 126.8,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, which causes an inflated count of total orders. This inflation then propagates downstream to `mart_revenue_daily`, leading to an incorrect `net_revenue` calculation. The duplicate `order_id` values are likely due to an issue in the source data or the `stg_orders` model itself not properly handling potential duplicates during its staging process.",
+          "evidence": [
+            "On 2026-06-28, `stg_orders` shows 100 total orders, but only 50 paid orders and 0 refunded orders. This implies that 50 orders are neither paid nor refunded, which is an unusual pattern compared to previous days where `total_orders` was closer to `paid_orders`.",
+            "The `total_orders` count in `stg_orders` is significantly higher than `paid_orders` and `refunded_orders` combined, especially after the onset date of 2026-06-28. For example, on 2026-06-28, `total_orders` is 100, while `paid_orders` is 50 and `refunded_orders` is 0. This suggests that there are orders being counted multiple times in `stg_orders`.",
+            "The repeated queries for `stg_orders` indicate a consistent pattern of `total_orders` being higher than expected, which points to a data quality issue within `stg_orders` itself."
+          ],
+          "proposed_fix": "Add a `DISTINCT` clause on `order_id` in the `stg_orders` model to ensure each order is counted only once. Alternatively, investigate the source data feeding `stg_orders` for duplicate `order_id` values and address the root cause there.",
+          "confidence": 0.7
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate `order_id` values causing inflated counts, while the ground truth identifies NULL amounts affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order counting rather than handling NULL values in stg_payments.amount as required."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 127.8,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, which causes an inflated count of total orders. This inflation then propagates downstream to `mart_revenue_daily`, leading to an incorrect `net_revenue` calculation. The duplicate `order_id` values are likely due to an issue in the source data or the `stg_orders` model itself not properly handling potential duplicates during its staging process.",
+          "evidence": [
+            "On 2026-06-28, `stg_orders` shows 100 total orders, but only 50 paid orders and 0 refunded orders. This implies that 50 orders are neither paid nor refunded, which is an unusual pattern compared to previous days where `total_orders` was closer to `paid_orders`.",
+            "The `total_orders` count in `stg_orders` is significantly higher than `paid_orders` and `refunded_orders` combined, especially after the onset date of 2026-06-28. For example, on 2026-06-28, `total_orders` is 100, while `paid_orders` is 50 and `refunded_orders` is 0. This suggests that there are orders being counted multiple times in `stg_orders`.",
+            "The repeated queries for `stg_orders` indicate a consistent pattern of `total_orders` being higher than expected, which points to a data quality issue within `stg_orders` itself."
+          ],
+          "proposed_fix": "Add a `DISTINCT` clause on `order_id` in the `stg_orders` model to ensure each order is counted only once. Alternatively, investigate the source data feeding `stg_orders` for duplicate `order_id` values and address the root cause there.",
+          "confidence": 0.7
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate `order_id` values causing inflated counts, while the ground truth identifies NULL amounts affecting revenue calculations.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order counting rather than handling NULL values in stg_payments.amount as required by the acceptable fixes."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 131.8,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  },
+  {
+    "fault": "unit_change_bank_transfer",
+    "model": "google/gemini-2.5-flash",
+    "judge_model": "openai/gpt-4o-mini",
+    "category": "unit_change",
+    "difficulty": "easy",
+    "alert": "net_revenue in mart_revenue_daily is +393% vs the same-weekday trailing average, starting 2026-06-28",
+    "expected_root_cause": "stg_payments",
+    "n_trials": 5,
+    "n_scored": 5,
+    "root_cause_rate": [
+      0,
+      5
+    ],
+    "mechanism_rate": [
+      0,
+      5
+    ],
+    "fix_rate": [
+      0,
+      5
+    ],
+    "root_cause_answers": {
+      "stg_orders": 5
+    },
+    "avg_tool_calls": 35.0,
+    "avg_wall": 121.8,
+    "degraded_count": 5,
+    "trials": [
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, leading to an inflated count of total orders. This is likely due to an issue in the upstream `raw.orders` table or the `stg_orders` transformation logic, where orders are being duplicated. The `mart_revenue_daily` model then aggregates these duplicated orders, causing the `net_revenue` metric to be artificially inflated.",
+          "evidence": [
+            "Before 2026-06-28, `total_orders` and `paid_orders` were roughly equal, with `refunded_orders` being a small fraction. After 2026-06-28, `total_orders` are significantly higher than `paid_orders`, indicating a large number of orders that are not associated with payments. For example, on 2026-06-27, total_orders: 10, paid_orders: 10. On 2026-06-28, total_orders: 49, paid_orders: 10. This suggests that orders are being duplicated in `stg_orders` without corresponding payments.",
+            "The `stg_orders` model is the first model in the lineage that processes order information. The observed discrepancy between `total_orders` and `paid_orders` points to an issue at this stage, where orders are being introduced or duplicated without proper payment association."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model and its upstream source `raw.orders` for duplicate `order_id` values. Implement a deduplication step in `stg_orders` based on `order_id` and `ordered_at` to ensure each order is counted only once. Alternatively, if the duplication is intentional (e.g., multiple items in an order), adjust the `mart_revenue_daily` model to aggregate revenue based on a unique transaction identifier rather than `order_id`.",
+          "confidence": 0.8
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate order IDs causing inflated revenue, while the ground truth identifies unnormalized bank transfer amounts as the root cause.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order IDs rather than the normalization of bank transfer amounts or sanity checks on payment amounts."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 122.5,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, leading to an inflated count of total orders. This is likely due to an issue in the upstream `raw.orders` table or the `stg_orders` transformation logic, where orders are being duplicated. The `mart_revenue_daily` model then aggregates these duplicated orders, causing the `net_revenue` metric to be artificially inflated.",
+          "evidence": [
+            "Before 2026-06-28, `total_orders` and `paid_orders` were roughly equal, with `refunded_orders` being a small fraction. After 2026-06-28, `total_orders` are significantly higher than `paid_orders`, indicating a large number of orders that are not associated with payments. For example, on 2026-06-27, total_orders: 10, paid_orders: 10. On 2026-06-28, total_orders: 49, paid_orders: 10. This suggests that orders are being duplicated in `stg_orders` without corresponding payments.",
+            "The `stg_orders` model is the first model in the lineage that processes order information. The observed discrepancy between `total_orders` and `paid_orders` points to an issue at this stage, where orders are being introduced or duplicated without proper payment association."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model and its upstream source `raw.orders` for duplicate `order_id` values. Implement a deduplication step in `stg_orders` based on `order_id` and `ordered_at` to ensure each order is counted only once. Alternatively, if the duplication is intentional (e.g., multiple items in an order), adjust the `mart_revenue_daily` model to aggregate revenue based on a unique transaction identifier rather than `order_id`.",
+          "confidence": 0.8
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate order IDs causing inflated revenue, while the ground truth identifies unnormalized bank transfer amounts as the root cause.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order IDs rather than the normalization of bank transfer amounts or adding a sanity check on payment amounts."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 117.6,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, leading to an inflated count of total orders. This is likely due to an issue in the upstream `raw.orders` table or the `stg_orders` transformation logic, where orders are being duplicated. The `mart_revenue_daily` model then aggregates these duplicated orders, causing the `net_revenue` metric to be artificially inflated.",
+          "evidence": [
+            "Before 2026-06-28, `total_orders` and `paid_orders` were roughly equal, with `refunded_orders` being a small fraction. After 2026-06-28, `total_orders` are significantly higher than `paid_orders`, indicating a large number of orders that are not associated with payments. For example, on 2026-06-27, total_orders: 10, paid_orders: 10. On 2026-06-28, total_orders: 49, paid_orders: 10. This suggests that orders are being duplicated in `stg_orders` without corresponding payments.",
+            "The `stg_orders` model is the first model in the lineage that processes order information. The observed discrepancy between `total_orders` and `paid_orders` points to an issue at this stage, where orders are being introduced or duplicated without proper payment association."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model and its upstream source `raw.orders` for duplicate `order_id` values. Implement a deduplication step in `stg_orders` based on `order_id` and `ordered_at` to ensure each order is counted only once. Alternatively, if the duplication is intentional (e.g., multiple items in an order), adjust the `mart_revenue_daily` model to aggregate revenue based on a unique transaction identifier rather than `order_id`.",
+          "confidence": 0.8
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate order IDs causing inflated revenue, while the ground truth identifies unnormalized bank transfer amounts as the root cause.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses a different issue related to duplicate order IDs rather than the normalization of bank transfer amounts or sanity checks on payment amounts."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 125.9,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, leading to an inflated count of total orders. This is likely due to an issue in the upstream `raw.orders` table or the `stg_orders` transformation logic, where orders are being duplicated. The `mart_revenue_daily` model then aggregates these duplicated orders, causing the `net_revenue` metric to be artificially inflated.",
+          "evidence": [
+            "Before 2026-06-28, `total_orders` and `paid_orders` were roughly equal, with `refunded_orders` being a small fraction. After 2026-06-28, `total_orders` are significantly higher than `paid_orders`, indicating a large number of orders that are not associated with payments. For example, on 2026-06-27, total_orders: 10, paid_orders: 10. On 2026-06-28, total_orders: 49, paid_orders: 10. This suggests that orders are being duplicated in `stg_orders` without corresponding payments.",
+            "The `stg_orders` model is the first model in the lineage that processes order information. The observed discrepancy between `total_orders` and `paid_orders` points to an issue at this stage, where orders are being introduced or duplicated without proper payment association."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model and its upstream source `raw.orders` for duplicate `order_id` values. Implement a deduplication step in `stg_orders` based on `order_id` and `ordered_at` to ensure each order is counted only once. Alternatively, if the duplication is intentional (e.g., multiple items in an order), adjust the `mart_revenue_daily` model to aggregate revenue based on a unique transaction identifier rather than `order_id`.",
+          "confidence": 0.8
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate order IDs causing inflated revenue, while the ground truth identifies unnormalized bank transfer amounts as the root cause.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses a different issue related to duplicate orders rather than the normalization of bank transfer amounts or sanity checks on payment amounts."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 124.8,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      },
+      {
+        "diagnosis": {
+          "root_cause_model": "stg_orders",
+          "mechanism": "The `stg_orders` model is producing duplicate `order_id` values, leading to an inflated count of total orders. This is likely due to an issue in the upstream `raw.orders` table or the `stg_orders` transformation logic, where orders are being duplicated. The `mart_revenue_daily` model then aggregates these duplicated orders, causing the `net_revenue` metric to be artificially inflated.",
+          "evidence": [
+            "Before 2026-06-28, `total_orders` and `paid_orders` were roughly equal, with `refunded_orders` being a small fraction. After 2026-06-28, `total_orders` are significantly higher than `paid_orders`, indicating a large number of orders that are not associated with payments. For example, on 2026-06-27, total_orders: 10, paid_orders: 10. On 2026-06-28, total_orders: 49, paid_orders: 10. This suggests that orders are being duplicated in `stg_orders` without corresponding payments.",
+            "The `stg_orders` model is the first model in the lineage that processes order information. The observed discrepancy between `total_orders` and `paid_orders` points to an issue at this stage, where orders are being introduced or duplicated without proper payment association."
+          ],
+          "proposed_fix": "Investigate the `stg_orders` model and its upstream source `raw.orders` for duplicate `order_id` values. Implement a deduplication step in `stg_orders` based on `order_id` and `ordered_at` to ensure each order is counted only once. Alternatively, if the duplication is intentional (e.g., multiple items in an order), adjust the `mart_revenue_daily` model to aggregate revenue based on a unique transaction identifier rather than `order_id`.",
+          "confidence": 0.8
+        },
+        "score": {
+          "root_cause_correct": false,
+          "root_cause_expected": "stg_payments",
+          "root_cause_got": "stg_orders",
+          "mechanism_correct": false,
+          "mechanism_score": 0.0,
+          "mechanism_reason": "The agent's explanation focuses on duplicate order IDs causing inflated revenue, while the ground truth identifies unnormalized bank transfer amounts as the root cause.",
+          "fix_acceptable": false,
+          "fix_reason": "The agent's proposed fix addresses duplicate order IDs rather than the normalization of bank transfer amounts or sanity checks on payment amounts."
+        },
+        "tool_calls": 35,
+        "wall_seconds": 118.0,
+        "degraded": true,
+        "model": "google/gemini-2.5-flash"
+      }
+    ]
+  }
+]

@@ -1,0 +1,37 @@
+id: negative_payment_amounts
+category: sign_corruption
+description: >
+  On 2026-06-28 a chargeback-import job starts writing reversals into the
+  payments feed with flipped signs: ~15% of successful payments arrive
+  negative. stg_payments has no amount > 0 validity guard, so each corrupted
+  payment subtracts its value from revenue instead of adding it.
+injection:
+  type: data_mutation
+  target: raw_payments
+  action: multiply_column
+  params:
+    key_column: payment_id
+    column: amount
+    factor: -1
+    fraction: 0.15
+    filter: "status = 'success' and paid_at >= '2026-06-28'"
+symptom:
+  metric: mart_revenue_daily.aov
+  # Measured on the live seed (deterministic): -23% to -39% on every post-onset
+  # day (594 payments negated; each subtracts ~2x its value from measured
+  # revenue). Detector fires on aov -33% (peak_z=4.9, onset exact) — orders_count
+  # is untouched, so aov mirrors the revenue drop and edges out total_revenue
+  # on peak z. total/net_revenue move identically.
+  expected_deviation: "-23-39%"
+  onset: "2026-06-28"
+ground_truth:
+  root_cause_model: stg_payments
+  root_cause_mechanism: >
+    From the onset date a share of successful payments carry negated amounts;
+    stg_payments forwards them with no amount > 0 validity guard, so each
+    corrupted payment subtracts from order_revenue — roughly double its value
+    in lost measured revenue — and daily total_revenue drops.
+  acceptable_fixes:
+    - add a positivity guard/test on stg_payments.amount for successful payments
+    - quarantine or absolute-value reversal rows in stg_payments and model chargebacks separately
+difficulty: medium
