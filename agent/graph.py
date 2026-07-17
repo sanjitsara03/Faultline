@@ -238,7 +238,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Run one Faultline investigation")
     ap.add_argument("--alert", required=True, help="metric anomaly alert text")
     ap.add_argument("--model", default=None,
-                    help="investigator model (default: $FAULTLINE_MODEL or minimax-m3)")
+                    help="investigator model (default: $FAULTLINE_MODEL or gpt-5.6-luna)")
     args = ap.parse_args()
     result = asyncio.run(investigate(args.alert, model=args.model))
     print(json.dumps(result, indent=2))

@@ -19,7 +19,11 @@ injection:
     filter: "status = 'success' and paid_at >= '2026-06-28'"
 symptom:
   metric: mart_revenue_daily.total_revenue
-  expected_deviation: "TBD"
+  # Measured on the live seed (deterministic): -33% to -43% on every post-onset
+  # day (1584 successful payments re-prefixed; their revenue drops out of the
+  # orders-payments join). Detector fires net_revenue -38%, peak_z=5.3, onset
+  # exact. total_revenue and net_revenue move together (refunds unaffected).
+  expected_deviation: "-33-43%"
   onset: "2026-06-28"
 ground_truth:
   # RELABELED 2026-07-17: originally int_orders_joined. All three eval models

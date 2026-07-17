@@ -87,9 +87,9 @@ dimensions**:
 | **`openai/gpt-5.6-luna`** (default) | 39/40 | 38/40 | 37/40 | 9.2 | 28s | **$0.04** |
 | `minimax/minimax-m3` | 35/40 | 37/40 | 35/40 | 19.8 | 94s | $0.04 |
 
-120/120 trials completed and scored — zero transport errors (one automatic
-infrastructure retry policy, never applied to model failures), zero budget-exhausted
-runs for the 5.6 models.
+120/120 trials completed and scored — zero transport errors (the harness retries a
+trial once on gateway flake, never on model failures), and zero budget-exhausted runs
+for the 5.6 models.
 
 **Luna is the default investigator**: 97% of terra's root-cause accuracy at a third of
 the cost, and the fastest investigations (28s). Terra is the accuracy pick — the only
@@ -209,9 +209,12 @@ M2M client), `harness/` (detector, eval harness, scoring, adversarial harness).
 
 - **Grow the 8-fault taxonomy toward 15–20** (schema drift, partial loads, late-arriving
   data) — the harness generalizes; only more YAML specs are needed.
-- **Naive single-prompt baseline** for a "30% → X%" narrative.
-- **MintMCP Agent Monitor** (Claude Code / Cursor hooks), **Admin MCP** (this repo was
-  deployed *through* it), **GitHub connector** in the Virtual MCP, **Config-as-Code**.
+- **No-method baseline** — run the same models with a bare "find the root cause"
+  prompt to isolate how much of the accuracy comes from the investigation rubric
+  vs. raw model capability.
+- **MintMCP Agent Monitor** (Claude Code / Cursor hooks), **Admin MCP** (the hosted
+  connector was deployed *through* it), **GitHub connector** in the Virtual MCP,
+  **Config-as-Code**.
 - **Middleware-based semantic SQL inspection** (Enterprise) to catch the exfil boundary
   above.
 - **M2M → mTLS**, per-fault least-privilege DB roles, AWS Bedrock AgentCore deployment.

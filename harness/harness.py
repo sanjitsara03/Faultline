@@ -212,7 +212,7 @@ async def main() -> None:
                     help="investigations per fault; >1 reports pass RATES "
                          "(the model is nondeterministic, so a single run is noisy)")
     ap.add_argument("--model", default=None,
-                    help="investigator model (default: $FAULTLINE_MODEL or minimax-m3); "
+                    help="investigator model (default: $FAULTLINE_MODEL or gpt-5.6-luna); "
                          "when set, results write to harness/results/<model>.json")
     args = ap.parse_args()
 

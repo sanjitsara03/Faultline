@@ -5,8 +5,8 @@ fixed constant (never datetime.now()), so two runs produce byte-identical data:
 the clean warehouse must be exactly reproducible so injected faults are the only
 source of deviation.
 
-Schema contract: docs/FAULTLINE_SPEC.md — 5 tables in Postgres schema `raw`,
-data window 2026-04-01 .. 2026-07-10 inclusive, timestamps timezone-naive UTC.
+Schema contract: 5 tables in Postgres schema `raw`, data window
+2026-04-01 .. 2026-07-10 inclusive, timestamps timezone-naive UTC.
 """
 
 import os

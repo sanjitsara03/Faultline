@@ -1,6 +1,6 @@
 """Score an agent Diagnosis against a fault's YAML ground truth.
 
-Three dimensions (mirrors FAULTLINE_SPEC.md 2.6):
+Three dimensions:
 - root_cause_model: exact match after normalizing node names (the hard, objective
   metric — no LLM in the loop, so it can't be gamed).
 - mechanism: LLM-as-judge — does the explanation capture the same causal story?
