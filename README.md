@@ -12,9 +12,6 @@ Every agent tool call is routed through **[MintMCP](https://www.mintmcp.com)**, 
 enterprise MCP gateway: the agent runs under a least-privilege identity with M2M
 auth, a gateway rule blocks destructive SQL, and every call is audited.
 
-> The differentiator is **programmatic evals against ground truth, not vibes**, and
-> an **honest** account of where the agent succeeds and where it doesn't.
-
 ---
 
 ## Architecture
@@ -32,7 +29,7 @@ auth, a gateway rule blocks destructive SQL, and every call is audited.
  inject.py ───────────────────(direct DB; test infra, not agent behavior)──────────►
 ```
 
-**The load-bearing asymmetry:** the agent's *entire* starting knowledge is a one-line
+**The load-bearing asymmetry:** the agent's entire starting knowledge is a one-line
 anomaly alert. It reaches the warehouse only through the gateway's three read-only
 tools. It never sees the fault spec, the injector, or the ground truth. The harness
 always holds the ground truth. That separation is what makes the eval numbers mean
@@ -101,21 +98,6 @@ call in an agent loop re-sends the whole transcript: minimax averages 19.8 tool 
 (~122k tokens) per investigation against luna's 9.2 calls (~31k). In agentic
 workloads, investigation efficiency dominates list price.
 
-**One ground-truth relabel, disclosed.** `orphaned_payments` (payments arriving with a
-new order-reference format that matches no order) was originally labeled with the join
-model as root cause. All three models independently named `stg_payments` — and by our
-own attribution rubric they are right: the join handles the values with standard SQL
-semantics, while staging owns normalizing the source's reference format. We corrected
-the answer key and re-scored the *stored* diagnoses (no reruns). Lesson: when three
-independent models unanimously disagree with your ground truth, audit the ground truth.
-
-**What's still hard:**
-- `orphaned_payments` **fixes** score only 2/5 per model — proposals tend to patch the
-  join rather than quarantine bad references at staging.
-- `refund_unit_inflation` alerts ~2.5 weeks *before* its mutation date (refunds lag
-  orders, so inflated refunds land on old order-dates). Both 5.6 models still solved it
-  5/5; minimax went 3/5.
-
 **Honest caveats:**
 - **Mechanism reflects the fixed `gpt-4o-mini` judge's strictness**, and fix scoring
   depends on the acceptable-fixes list — both disclosed per-trial in `harness/results/`.
@@ -136,7 +118,7 @@ method, not the model, was the bottleneck.
 
 ---
 
-## Security: the gateway earns its keep
+## Security
 
 `run_query` deliberately accepts raw SQL — that's the governance-interesting tool. On
 the Virtual MCP, a **rule blocks any `run_query` whose SQL contains a destructive verb**
@@ -166,12 +148,6 @@ uv run python harness/adversarial.py --all --naive    # un-hardened agent
   finished its diagnosis), and blocking too much is the safe failure direction — but
   it's a clean demonstration that pattern rules read text, not meaning. The harness's
   false-positive metric is now comment-aware so this can't be masked.
-
-That's the whole point of **defense in depth**: the gateway protects even agents that
-aren't injection-safe. (A read-only DB session backs it up as a third layer.) The
-documented boundary of pattern matching — comment false-positives on one side,
-`SELECT`-based exfiltration passing untouched on the other — is exactly the case for
-semantic inspection, which is MintMCP's Enterprise middleware, out of scope here.
 
 ---
 
@@ -204,17 +180,3 @@ Repo layout: `warehouse/` (seed + dbt), `faults/` (specs + injector), `mcp_serve
 M2M client), `harness/` (detector, eval harness, scoring, adversarial harness).
 
 ---
-
-## Next steps (deliberately cut from this sprint)
-
-- **Grow the 8-fault taxonomy toward 15–20** (schema drift, partial loads, late-arriving
-  data) — the harness generalizes; only more YAML specs are needed.
-- **No-method baseline** — run the same models with a bare "find the root cause"
-  prompt to isolate how much of the accuracy comes from the investigation rubric
-  vs. raw model capability.
-- **MintMCP Agent Monitor** (Claude Code / Cursor hooks), **Admin MCP** (the hosted
-  connector was deployed *through* it), **GitHub connector** in the Virtual MCP,
-  **Config-as-Code**.
-- **Middleware-based semantic SQL inspection** (Enterprise) to catch the exfil boundary
-  above.
-- **M2M → mTLS**, per-fault least-privilege DB roles, AWS Bedrock AgentCore deployment.
